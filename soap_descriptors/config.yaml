@@ -1,0 +1,17 @@
+input:
+  trajectory: "../aimd_scripts/C9_AIMD_dataset/cif_frames"
+  format: "cif_dir"
+
+soap:
+  species: ["C", "H", "O", "Zn"]
+  rcut: 5.0
+  nmax: 8
+  lmax: 6
+  sigma: 0.5
+  periodic: true
+
+output:
+  root: "outputs"
+  descriptors_file: "descriptors.npy"
+  frame_index_file: "frame_index.csv"
+  metadata_file: "metadata.json"

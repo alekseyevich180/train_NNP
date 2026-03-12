@@ -1,0 +1,8 @@
+{
+  "module": "nn_uncertainty",
+  "role": "neural_network_structure_selector",
+  "status": "missing_input",
+  "descriptor_input": "C:\\Users\\yingkaiwu\\Desktop\\Active-learning\\NNP-reference\\scripts\\soap_descriptors\\outputs\\descriptors.npy",
+  "frame_index_input": "C:\\Users\\yingkaiwu\\Desktop\\Active-learning\\NNP-reference\\scripts\\soap_descriptors\\outputs\\frame_index.csv",
+  "message": "SOAP descriptors and frame index are required before training."
+}

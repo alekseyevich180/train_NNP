@@ -1,0 +1,5 @@
+{
+  "module": "final_training_dataset",
+  "status": "scaffold",
+  "next_step": "Implement candidate merge, deduplication, provenance tracking, and split export."
+}

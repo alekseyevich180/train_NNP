@@ -1,0 +1,15 @@
+input:
+  trajectory: "../aimd_scripts/C9_AIMD_dataset/cif_frames"
+  format: "cif_dir"
+
+chemistry:
+  zn_o_cutoff: 2.20
+
+output:
+  root: "outputs"
+  coordination_table: "coordination_table.csv"
+  coordination_events: "coordination_events.csv"
+  key_frames_dir: "key_frames"
+
+selection:
+  save_changed_frames: true

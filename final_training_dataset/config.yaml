@@ -1,0 +1,21 @@
+inputs:
+  bond_events: "../bond_change_detection/outputs/bond_events.csv"
+  coordination_events: "../zn_o_coordination/outputs/coordination_events.csv"
+  soap_metadata: "../soap_descriptors/outputs/metadata.json"
+  uncertainty_scores: "../nn_uncertainty/outputs/uncertainty_scores.csv"
+  vdw_scores: "../vdw_energy_predictor/outputs/vdw_scores.csv"
+
+dataset:
+  split_ratio:
+    train: 0.8
+    val: 0.1
+    test: 0.1
+  random_seed: 42
+
+output:
+  root: "outputs"
+  candidates_csv: "final_candidates.csv"
+  provenance_json: "provenance.json"
+  train_dir: "train"
+  val_dir: "val"
+  test_dir: "test"

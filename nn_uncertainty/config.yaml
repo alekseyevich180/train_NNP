@@ -1,0 +1,32 @@
+input:
+  descriptors: "../soap_descriptors/outputs/descriptors.npy"
+  frame_index: "../soap_descriptors/outputs/frame_index.csv"
+  raw_frames: "../aimd_scripts/AIMD_dataset/cif_frames"
+
+labels:
+  bond_events: "../bond_change_detection/outputs/bond_events.csv"
+  coordination_events: "../zn_o_coordination/outputs/coordination_events.csv"
+  mode: "heuristic"
+
+model:
+  backend: "pytorch"
+  task: "binary_classification"
+  hidden_dims: [256, 128, 64]
+  dropout: 0.1
+  epochs: 50
+  batch_size: 64
+  learning_rate: 0.001
+  weight_decay: 0.00001
+  seed: 42
+
+selection:
+  score_column: "selection_score"
+  threshold: 0.7
+  top_k: 500
+
+output:
+  root: "outputs"
+  scores_csv: "selector_scores.csv"
+  selected_csv: "selected_structures.csv"
+  selected_dir: "high_value_frames"
+  summary_json: "summary.json"

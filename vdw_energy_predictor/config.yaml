@@ -1,0 +1,16 @@
+input:
+  trajectory: "../aimd_scripts/C9_AIMD_dataset/cif_frames"
+  format: "cif_dir"
+
+predictor:
+  backend: "placeholder"
+  model_path: ""
+
+selection:
+  top_k: 100
+
+output:
+  root: "outputs"
+  scores_csv: "vdw_scores.csv"
+  selected_dir: "high_vdw_frames"
+  summary_json: "summary.json"

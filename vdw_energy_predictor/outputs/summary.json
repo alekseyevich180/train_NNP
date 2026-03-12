@@ -1,0 +1,5 @@
+{
+  "module": "vdw_energy_predictor",
+  "status": "scaffold",
+  "next_step": "Implement vdW scoring or surrogate inference for candidate structures."
+}

@@ -1,0 +1,5 @@
+{
+  "module": "zn_o_coordination",
+  "status": "scaffold",
+  "next_step": "Implement Zn-O neighbor counting and coordination-change event detection."
+}

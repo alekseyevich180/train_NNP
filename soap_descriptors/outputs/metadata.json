@@ -1,0 +1,5 @@
+{
+  "module": "soap_descriptors",
+  "status": "scaffold",
+  "next_step": "Implement SOAP descriptor generation and frame index export."
+}
