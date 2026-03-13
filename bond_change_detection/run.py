@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from ase.io import read, write
+from ase.io import iread, read, write
 from ase.neighborlist import neighbor_list
 
 try:
@@ -54,6 +54,28 @@ def discover_frames(input_path: Path, input_format: str) -> list[tuple[str, Any]
             return []
         atoms_list = read(input_path, index=":")
         return [(f"frame_{idx:08d}", atoms) for idx, atoms in enumerate(atoms_list)]
+    raise ValueError(f"Unsupported input format: {input_format}")
+
+
+def discover_frame_paths(input_path: Path, input_format: str) -> list[Path]:
+    if input_format == "cif_dir":
+        if not input_path.exists():
+            return []
+        return sorted(input_path.glob("*.cif"))
+    raise ValueError(f"Frame paths are only supported for cif_dir input, got: {input_format}")
+
+
+def iter_frames(input_path: Path, input_format: str):
+    if input_format == "cif_dir":
+        for frame_file in discover_frame_paths(input_path, input_format):
+            yield frame_file.stem, read(frame_file)
+        return
+    if input_format == "trajectory_file":
+        if not input_path.exists():
+            return
+        for idx, atoms in enumerate(iread(input_path, index=":")):
+            yield f"frame_{idx:08d}", atoms
+        return
     raise ValueError(f"Unsupported input format: {input_format}")
 
 
@@ -123,33 +145,47 @@ def main() -> None:
     input_format = config["input"]["format"]
     cutoffs = parse_cutoffs(config["chemistry"]["cutoffs"])
     save_changed_frames = bool(config["selection"].get("save_changed_frames", True))
+    progress_interval = max(1, int(config["selection"].get("progress_interval", 100)))
 
-    frames = discover_frames(input_path, input_format)
     events_csv = output_root / config["output"]["events_csv"]
     summary_json = output_root / config["output"]["summary_json"]
+    frame_iter = iter_frames(input_path, input_format)
 
-    if len(frames) < 2:
+    try:
+        previous_label, previous_atoms = next(frame_iter)
+    except StopIteration:
         export_events([], events_csv)
         summary = {
             "module": "bond_change_detection",
-            "status": "no_input" if not frames else "insufficient_frames",
+            "status": "no_input",
             "input_path": str(input_path),
             "input_format": input_format,
-            "frames_loaded": len(frames),
+            "frames_loaded": 0,
             "events_detected": 0,
             "message": "Provide at least two trajectory frames to detect bond changes.",
         }
         summary_json.write_text(json.dumps(summary, indent=2), encoding="utf-8")
-        print(f"No bond changes computed. Frames loaded: {len(frames)}.")
+        print("No bond changes computed. Frames loaded: 0.")
         return
 
+    previous_bonds = build_bond_map(previous_atoms, cutoffs)
     events: list[dict[str, Any]] = []
     key_frame_labels: set[str] = set()
-    previous_label, previous_atoms = frames[0]
-    previous_bonds = build_bond_map(previous_atoms, cutoffs)
+    frames_loaded = 1
 
-    for frame_index in range(1, len(frames)):
-        frame_label, atoms = frames[frame_index]
+    if input_format == "cif_dir":
+        total_frames = len(discover_frame_paths(input_path, input_format))
+    else:
+        total_frames = None
+
+    for frame_index, (frame_label, atoms) in enumerate(frame_iter, start=1):
+        frames_loaded += 1
+        if frame_index % progress_interval == 0:
+            if total_frames is None:
+                print(f"Processed {frame_index + 1} frames...")
+            else:
+                print(f"Processed {frame_index + 1}/{total_frames} frames...")
+
         current_bonds = build_bond_map(atoms, cutoffs)
 
         formed_keys = sorted(set(current_bonds) - set(previous_bonds))
@@ -193,26 +229,40 @@ def main() -> None:
             )
             key_frame_labels.add(frame_label)
 
+        if save_changed_frames and frame_label in key_frame_labels:
+            export_key_frame(frame_label, atoms, key_frames_dir)
+
         previous_label = frame_label
         previous_bonds = current_bonds
 
-    export_events(events, events_csv)
+    if frames_loaded < 2:
+        export_events([], events_csv)
+        summary = {
+            "module": "bond_change_detection",
+            "status": "insufficient_frames",
+            "input_path": str(input_path),
+            "input_format": input_format,
+            "frames_loaded": frames_loaded,
+            "events_detected": 0,
+            "message": "Provide at least two trajectory frames to detect bond changes.",
+        }
+        summary_json.write_text(json.dumps(summary, indent=2), encoding="utf-8")
+        print(f"No bond changes computed. Frames loaded: {frames_loaded}.")
+        return
 
-    if save_changed_frames:
-        frame_lookup = dict(frames)
-        for frame_label in sorted(key_frame_labels):
-            export_key_frame(frame_label, frame_lookup[frame_label], key_frames_dir)
+    export_events(events, events_csv)
 
     summary = {
         "module": "bond_change_detection",
         "status": "completed",
         "input_path": str(input_path),
         "input_format": input_format,
-        "frames_loaded": len(frames),
+        "frames_loaded": frames_loaded,
         "events_detected": len(events),
         "frames_with_changes": len(key_frame_labels),
         "pair_cutoffs": {f"{left}-{right}": value for (left, right), value in cutoffs.items()},
         "saved_key_frames": save_changed_frames,
+        "progress_interval": progress_interval,
     }
     summary_json.write_text(json.dumps(summary, indent=2), encoding="utf-8")
     print(
