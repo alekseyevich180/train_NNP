@@ -19,4 +19,4 @@ output:
 
 selection:
   save_changed_frames: true
-  progress_interval: 100
+  progress_interval: 10
