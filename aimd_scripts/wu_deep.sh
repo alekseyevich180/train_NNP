@@ -13,8 +13,10 @@ set -euo pipefail
 
 SCRIPT_NAME="wu_deep.sh"
 
-# 4小时测试（留20分钟buffer）
-MAX_TIME=417600
+# 120小时作业时长，预留4小时buffer给收尾和重投
+JOB_HOURS=120
+BUFFER_HOURS=4
+MAX_TIME=$(((JOB_HOURS - BUFFER_HOURS) * 3600))
 
 # ==========================
 # 环境加载
