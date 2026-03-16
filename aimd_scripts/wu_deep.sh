@@ -7,37 +7,19 @@
 
 set -euo pipefail
 
-# ==========================
-# 基本设置
-# ==========================
-
 SCRIPT_NAME="wu_deep.sh"
-
-# 120小时作业时长，预留4小时buffer给收尾和重投
 JOB_HOURS=120
 BUFFER_HOURS=4
 MAX_TIME=$(((JOB_HOURS - BUFFER_HOURS) * 3600))
 
-# ==========================
-# 环境加载
-# ==========================
-
 module load intel impi lammps
 source /home/pj24001724/ku40000345/wu/deepmd_kit/use.sh
-
-# ==========================
-# 路径设置
-# ==========================
 
 TRAIN_DIR="/home/pj24001724/ku40000345/wu/deepmd_train/surface_600_1200k/01.train"
 INPUT_JSON="${TRAIN_DIR}/input.json"
 
 LMP_DIR="/home/pj24001724/ku40000345/wu/deepmd_train/surface_600_1200k/02.lmp"
 LMP_EXE="/home/pj24001724/ku40000345/wu/deepmd_kit/deepmd_root/bin/lmp"
-
-# ==========================
-# 线程设置
-# ==========================
 
 export OMP_NUM_THREADS=15
 export DP_INTRA_OP_PARALLELISM_THREADS=15
@@ -47,10 +29,6 @@ export TF_INTRA_OP_PARALLELISM_THREADS=15
 export TF_INTER_OP_PARALLELISM_THREADS=1
 
 export TF_CPP_MIN_LOG_LEVEL=3
-
-# ==========================
-# 数据抽取
-# ==========================
 
 DIR1="/home/pj24001724/ku40000345/wu/deepmd_train/surface_600k/puresurface_300k"
 DIR2="/home/pj24001724/ku40000345/wu/deepmd_train/surface_600k/puresurface_800k/puresurface_800k/dp_data_aimd1"
@@ -94,16 +72,11 @@ else
     echo ">> 验证集已存在"
 fi
 
-# 清理 type.raw
 rm -f ${TRAIN_DIR}/set.*/type.raw
 rm -f ${TRAIN_DIR}/set.*/type_map.raw
 
 rm -f ${DEST}/set.*/type.raw
 rm -f ${DEST}/set.*/type_map.raw
-
-# ==========================
-# 开始训练
-# ==========================
 
 OUTDIR="${TRAIN_DIR}/run.train"
 mkdir -p "${OUTDIR}"
@@ -134,10 +107,6 @@ EXIT_CODE=$?
 
 set -e
 
-# ==========================
-# 判断状态
-# ==========================
-
 RESUBMIT=0
 
 if [ $EXIT_CODE -eq 124 ]; then
@@ -156,10 +125,6 @@ else
     exit 1
 
 fi
-
-# ==========================
-# Freeze & Test
-# ==========================
 
 if [ $RESUBMIT -eq 0 ]; then
 
@@ -196,10 +161,6 @@ else
 fi
 
 echo "==================== CURRENT JOB DONE ===================="
-
-# ==========================
-# 自动重新提交
-# ==========================
 
 if [ $RESUBMIT -eq 1 ]; then
 
