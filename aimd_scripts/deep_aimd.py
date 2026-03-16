@@ -14,7 +14,8 @@ from pfp_api_client.pfp.calculators.ase_calculator import ASECalculator
 CONFIG={
 "system":{
 "input_file":"acid.cif",
-"bottom_z_threshold":9.0,
+"fixed_z_lower_bound":4.0,
+"fixed_z_upper_bound":9.0,
 "surface_relax_depth":12.0,
 "output_root":"acid_AIMD_dataset"
 },
@@ -47,7 +48,8 @@ def relax_surface(atoms):
 
     print("Starting surface relaxation...")
 
-    bottom_z = CONFIG["system"]["bottom_z_threshold"]
+    fixed_z_lower = CONFIG["system"]["fixed_z_lower_bound"]
+    fixed_z_upper = CONFIG["system"]["fixed_z_upper_bound"]
     surface_depth = CONFIG["system"]["surface_relax_depth"]
 
     max_z = max(atoms.positions[:,2])
@@ -61,8 +63,8 @@ def relax_surface(atoms):
         if atom.symbol not in ["Zn","O"]:
             freeze.append(atom.index)
 
-        # 冻结底层 ZnO
-        elif atom.position[2] < bottom_z:
+        # 冻结固定 z 区间内的 ZnO
+        elif fixed_z_lower <= atom.position[2] <= fixed_z_upper:
             freeze.append(atom.index)
 
         # 冻结深层 ZnO（只优化最表面几层）
@@ -187,7 +189,13 @@ def run():
     # 只固定底层 ZnO
     # -------------------------------------------------
 
-    fixed=[a.index for a in atoms if a.position[2]<CONFIG["system"]["bottom_z_threshold"]]
+    fixed_z_lower = CONFIG["system"]["fixed_z_lower_bound"]
+    fixed_z_upper = CONFIG["system"]["fixed_z_upper_bound"]
+    fixed=[
+        a.index
+        for a in atoms
+        if fixed_z_lower <= a.position[2] <= fixed_z_upper
+    ]
     atoms.set_constraint(FixAtoms(indices=fixed))
 
 
