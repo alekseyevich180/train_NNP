@@ -1,0 +1,7 @@
+matplotlib
+numpy
+optuna
+pandas
+torch
+ase
+fairchem-core

@@ -9,7 +9,7 @@ import optuna
 import pandas as pd
 import torch
 from ase import Atoms
-from ase.constraints import ExpCellFilter, StrainFilter
+from ase.filters import ExpCellFilter, StrainFilter
 from ase.io import read, write
 from ase.optimize import LBFGS
 from fairchem.core import FAIRChemCalculator, pretrained_mlip
