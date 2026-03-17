@@ -12,7 +12,7 @@ from ase import Atoms
 from ase.filters import ExpCellFilter, StrainFilter
 from ase.io import read, write
 from ase.optimize import LBFGS
-from fairchem.core import FAIRChemCalculator, pretrained_mlip
+from fairchem.core import FAIRChemCalculator
 
 torch.set_float32_matmul_precision("medium")
 torch.backends.cuda.matmul.allow_tf32 = True
@@ -20,9 +20,9 @@ torch.backends.cuda.matmul.allow_tf32 = True
 CALCULATOR = None
 
 
-def build_calculator(uma_model: str, device: str, include_d3: bool):
-    predictor = pretrained_mlip.get_predict_unit(uma_model, device=device)
-    calc = FAIRChemCalculator(predictor, task_name="omat")
+def build_calculator(uma_model: str, device: str, include_d3: bool, checkpoint: Path | None = None):
+    model_ref = str(checkpoint) if checkpoint is not None else uma_model
+    calc = FAIRChemCalculator.from_model_checkpoint(model_ref, task_name="omat", device=device)
 
     if include_d3:
         from ase.calculators.dftd3 import DFTD3
@@ -136,11 +136,12 @@ def main():
     parser.add_argument("--n_trials", type=int, default=300)
     parser.add_argument("--fmax", type=float, default=1e-4)
     parser.add_argument("--uma_model", type=str, default="uma-s-1p1")
+    parser.add_argument("--checkpoint", type=Path, default=None)
     parser.add_argument("--device", type=str, default="cuda", choices=["cuda", "cpu"])
     parser.add_argument("--include_d3", action="store_true")
     args = parser.parse_args()
 
-    CALCULATOR = build_calculator(args.uma_model, args.device, args.include_d3)
+    CALCULATOR = build_calculator(args.uma_model, args.device, args.include_d3, args.checkpoint)
     args.output_dir.mkdir(parents=True, exist_ok=True)
 
     for molecule_path in args.molecules:
