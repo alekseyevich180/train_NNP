@@ -1,5 +1,5 @@
 input:
-  trajectory: "../aimd_scripts/C9_AIMD_dataset/cif_frames"
+  trajectory: "../../aimd_data/acid1_dataset/acid1_dataset/cif_frames" 
   format: "cif_dir"
 
 chemistry:

@@ -1,19 +1,9 @@
 {
   "module": "bond_change_detection",
-  "status": "completed",
-  "input_path": "C:\\Users\\yingkaiwu\\Desktop\\Active-learning\\NNP-reference\\scripts\\aimd_scripts\\C9_AIMD_dataset\\cif_frames",
+  "status": "no_input",
+  "input_path": "C:\\Users\\yingkaiwu\\Desktop\\Active-learning\\NNP\\aimd_data\\acid1_dataset\\acid1_dataset\\cif_frames",
   "input_format": "cif_dir",
-  "frames_loaded": 3270,
-  "events_detected": 282927,
-  "frames_with_changes": 3269,
-  "pair_cutoffs": {
-    "C-C": 1.85,
-    "C-O": 1.65,
-    "C-H": 1.35,
-    "H-O": 1.25,
-    "O-Zn": 2.2,
-    "C-Zn": 2.3
-  },
-  "saved_key_frames": true,
-  "progress_interval": 10
+  "frames_loaded": 0,
+  "events_detected": 0,
+  "message": "Provide at least two trajectory frames to detect bond changes."
 }
