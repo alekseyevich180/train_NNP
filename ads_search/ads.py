@@ -22,7 +22,7 @@ CALCULATOR = None
 
 def build_calculator(uma_model: str, device: str, include_d3: bool, checkpoint: Path | None = None):
     model_ref = str(checkpoint) if checkpoint is not None else uma_model
-    calc = FAIRChemCalculator.from_model_checkpoint(model_ref, task_name="omat", device=device)
+    calc = FAIRChemCalculator.from_model_checkpoint(model_ref, task_name="oc22", device=device)
 
     if include_d3:
         from ase.calculators.dftd3 import DFTD3
@@ -71,6 +71,7 @@ def objective(trial: optuna.Trial) -> float:
     e_slab = trial.study.user_attrs["E_slab"]
     mol = json_to_atoms(trial.study.user_attrs["mol"])
     e_mol = trial.study.user_attrs["E_mol"]
+    output_dir = Path(trial.study.user_attrs["output_dir"])
 
     phi = 180.0 * trial.suggest_float("phi", -1.0, 1.0)
     theta = np.degrees(np.arccos(trial.suggest_float("theta", -1.0, 1.0)))
@@ -90,8 +91,28 @@ def objective(trial: optuna.Trial) -> float:
 
     combined = slab + mol
     e_total = get_opt_energy(combined, CALCULATOR, fmax=1e-3)
-    trial.set_user_attr("structure", atoms_to_json(combined))
-    return e_total - e_slab - e_mol
+    adsorption_energy = e_total - e_slab - e_mol
+    structure_json = atoms_to_json(combined)
+    write(output_dir / f"{trial.number}.cif", combined)
+    trial.set_user_attr("structure", structure_json)
+
+    block_best_value = trial.study.user_attrs.get("block_best_value")
+    if block_best_value is None or adsorption_energy < block_best_value:
+        trial.study.set_user_attr("block_best_value", adsorption_energy)
+        trial.study.set_user_attr("block_best_trial_number", trial.number)
+        trial.study.set_user_attr("block_best_structure", structure_json)
+
+    if (trial.number + 1) % 100 == 0:
+        block_start = trial.number - 99
+        block_end = trial.number
+        block_best_structure = json_to_atoms(trial.study.user_attrs["block_best_structure"])
+        phase_best_path = output_dir / f"trial_{block_start:03d}_{block_end:03d}_best.cif"
+        write(phase_best_path, block_best_structure)
+        trial.study.set_user_attr("block_best_value", None)
+        trial.study.set_user_attr("block_best_trial_number", None)
+        trial.study.set_user_attr("block_best_structure", None)
+
+    return adsorption_energy
 
 
 def save_trial_grid(study: optuna.Study, output_dir: Path) -> None:
@@ -135,7 +156,7 @@ def main():
     parser.add_argument("--output_dir", type=Path, default=Path("output"))
     parser.add_argument("--n_trials", type=int, default=300)
     parser.add_argument("--fmax", type=float, default=1e-4)
-    parser.add_argument("--uma_model", type=str, default="uma-s-1p1")
+    parser.add_argument("--uma_model", type=str, default="uma-s-1p2")
     parser.add_argument("--checkpoint", type=Path, default=None)
     parser.add_argument("--device", type=str, default="cuda", choices=["cuda", "cpu"])
     parser.add_argument("--include_d3", action="store_true")
@@ -148,19 +169,19 @@ def main():
         print(f"\nStarting optimization for {molecule_path.name}...\n")
         slab, e_slab = load_slab(args.surface, CALCULATOR, args.fmax)
         mol, e_mol = load_molecule(molecule_path, CALCULATOR, args.fmax)
+        output_dir = args.output_dir / molecule_path.stem
+        output_dir.mkdir(parents=True, exist_ok=True)
 
         study = optuna.create_study(direction="minimize")
         study.set_user_attr("slab", atoms_to_json(slab))
         study.set_user_attr("E_slab", e_slab)
         study.set_user_attr("mol", atoms_to_json(mol))
         study.set_user_attr("E_mol", e_mol)
+        study.set_user_attr("output_dir", str(output_dir))
         study.optimize(objective, n_trials=args.n_trials)
 
         print(f"Best trial for {molecule_path.name}: #{study.best_trial.number}")
         print(f"Adsorption energy: {study.best_value:.6f} eV")
-
-        output_dir = args.output_dir / molecule_path.stem
-        output_dir.mkdir(parents=True, exist_ok=True)
 
         optuna.visualization.plot_optimization_history(study).write_html(
             output_dir / "optimization_history.html"
