@@ -66,28 +66,48 @@ def load_molecule(molecule_path: Path, calculator, fmax: float) -> tuple[Atoms, 
     return mol, energy
 
 
+def get_active_indices(atoms: Atoms, active_symbols: list[str]) -> list[int]:
+    active_symbol_set = set(active_symbols)
+    indices = [idx for idx, atom in enumerate(atoms) if atom.symbol in active_symbol_set]
+    if not indices:
+        raise ValueError(f"No active-site atoms found for symbols: {', '.join(active_symbols)}")
+    return indices
+
+
+def get_min_active_distance(combined: Atoms, n_slab_atoms: int, active_indices: list[int]) -> float:
+    active_positions = combined.positions[active_indices]
+    molecule_positions = combined.positions[n_slab_atoms:]
+    deltas = active_positions[:, None, :] - molecule_positions[None, :, :]
+    return float(np.linalg.norm(deltas, axis=2).min())
+
+
 def objective(trial: optuna.Trial) -> float:
     slab = json_to_atoms(trial.study.user_attrs["slab"])
     e_slab = trial.study.user_attrs["E_slab"]
     mol = json_to_atoms(trial.study.user_attrs["mol"])
     e_mol = trial.study.user_attrs["E_mol"]
     output_dir = Path(trial.study.user_attrs["output_dir"])
+    active_indices = trial.study.user_attrs["active_indices"]
+    site_radius = float(trial.study.user_attrs["site_radius"])
+    detach_cutoff = float(trial.study.user_attrs["detach_cutoff"])
+    penalty_energy = float(trial.study.user_attrs["penalty_energy"])
 
     phi = 180.0 * trial.suggest_float("phi", -1.0, 1.0)
     theta = np.degrees(np.arccos(trial.suggest_float("theta", -1.0, 1.0)))
     psi = 180.0 * trial.suggest_float("psi", -1.0, 1.0)
-    x_pos = trial.suggest_float("x_pos", 0.0, 0.5)
-    y_pos = trial.suggest_float("y_pos", 0.0, 0.5)
+    site_choice = trial.suggest_int("site_index", 0, len(active_indices) - 1)
+    dx = trial.suggest_float("dx", -site_radius, site_radius)
+    dy = trial.suggest_float("dy", -site_radius, site_radius)
     z_hig = trial.suggest_float("z_hig", 2.0, 6.0)
 
     mol.euler_rotate(phi=phi, theta=theta, psi=psi)
 
-    xy_position = np.matmul([x_pos, y_pos, 0.0], slab.cell)[:2]
-    mol.translate([xy_position[0], xy_position[1], 0.0])
+    active_index = active_indices[site_choice]
+    active_position = slab.positions[active_index]
+    mol.translate([active_position[0] + dx, active_position[1] + dy, 0.0])
 
-    max_slab_z = np.max(slab.positions[:, 2])
     min_mol_z = np.min(mol.positions[:, 2])
-    mol.translate([0.0, 0.0, max_slab_z + z_hig - min_mol_z])
+    mol.translate([0.0, 0.0, active_position[2] + z_hig - min_mol_z])
 
     combined = slab + mol
     e_total = get_opt_energy(combined, CALCULATOR, fmax=1e-3)
@@ -95,6 +115,13 @@ def objective(trial: optuna.Trial) -> float:
     structure_json = atoms_to_json(combined)
     write(output_dir / f"{trial.number}.cif", combined)
     trial.set_user_attr("structure", structure_json)
+
+    min_active_distance = get_min_active_distance(combined, len(slab), active_indices)
+    trial.set_user_attr("min_active_distance", min_active_distance)
+    if min_active_distance > detach_cutoff:
+        trial.set_user_attr("detached", True)
+        return penalty_energy + min_active_distance
+    trial.set_user_attr("detached", False)
 
     block_best_value = trial.study.user_attrs.get("block_best_value")
     if block_best_value is None or adsorption_energy < block_best_value:
@@ -159,6 +186,10 @@ def main():
     parser.add_argument("--uma_model", type=str, default="uma-s-1p2")
     parser.add_argument("--checkpoint", type=Path, default=None)
     parser.add_argument("--device", type=str, default="cuda", choices=["cuda", "cpu"])
+    parser.add_argument("--active_symbols", nargs="+", default=["Co"])
+    parser.add_argument("--site_radius", type=float, default=2.0)
+    parser.add_argument("--detach_cutoff", type=float, default=4.0)
+    parser.add_argument("--penalty_energy", type=float, default=1e6)
     parser.add_argument("--include_d3", action="store_true")
     args = parser.parse_args()
 
@@ -171,6 +202,7 @@ def main():
         mol, e_mol = load_molecule(molecule_path, CALCULATOR, args.fmax)
         output_dir = args.output_dir / molecule_path.stem
         output_dir.mkdir(parents=True, exist_ok=True)
+        active_indices = get_active_indices(slab, args.active_symbols)
 
         study = optuna.create_study(direction="minimize")
         study.set_user_attr("slab", atoms_to_json(slab))
@@ -178,6 +210,10 @@ def main():
         study.set_user_attr("mol", atoms_to_json(mol))
         study.set_user_attr("E_mol", e_mol)
         study.set_user_attr("output_dir", str(output_dir))
+        study.set_user_attr("active_indices", active_indices)
+        study.set_user_attr("site_radius", args.site_radius)
+        study.set_user_attr("detach_cutoff", args.detach_cutoff)
+        study.set_user_attr("penalty_energy", args.penalty_energy)
         study.optimize(objective, n_trials=args.n_trials)
 
         print(f"Best trial for {molecule_path.name}: #{study.best_trial.number}")

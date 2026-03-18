@@ -41,13 +41,18 @@ def parse_cutoffs(raw_cutoffs: dict[str, float]) -> dict[tuple[str, str], float]
     return parsed
 
 
+def frame_label_from_path(input_path: Path, frame_file: Path) -> str:
+    relative_path = frame_file.relative_to(input_path)
+    return str(relative_path.with_suffix("")).replace("\\", "__").replace("/", "__")
+
+
 def discover_frames(input_path: Path, input_format: str) -> list[tuple[str, Any]]:
     if input_format == "cif_dir":
         if not input_path.exists():
             return []
         frames: list[tuple[str, Any]] = []
-        for frame_file in sorted(input_path.glob("*.cif")):
-            frames.append((frame_file.stem, read(frame_file)))
+        for frame_file in sorted(input_path.rglob("*.cif")):
+            frames.append((frame_label_from_path(input_path, frame_file), read(frame_file)))
         return frames
     if input_format == "trajectory_file":
         if not input_path.exists():
@@ -61,14 +66,14 @@ def discover_frame_paths(input_path: Path, input_format: str) -> list[Path]:
     if input_format == "cif_dir":
         if not input_path.exists():
             return []
-        return sorted(input_path.glob("*.cif"))
+        return sorted(input_path.rglob("*.cif"))
     raise ValueError(f"Frame paths are only supported for cif_dir input, got: {input_format}")
 
 
 def iter_frames(input_path: Path, input_format: str):
     if input_format == "cif_dir":
         for frame_file in discover_frame_paths(input_path, input_format):
-            yield frame_file.stem, read(frame_file)
+            yield frame_label_from_path(input_path, frame_file), read(frame_file)
         return
     if input_format == "trajectory_file":
         if not input_path.exists():

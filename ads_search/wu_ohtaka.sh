@@ -32,6 +32,10 @@ FMAX=1e-4
 UMA_MODEL=uma-s-1p2
 CHECKPOINT=/home/k0710/k071001/UMA/checkpoints/uma-s-1p2.pt
 DEVICE=cpu
+ACTIVE_SYMBOLS="Co"
+SITE_RADIUS=2.0
+DETACH_CUTOFF=4.0
+PENALTY_ENERGY=1000000.0
 INCLUDE_D3=0
 OUTPUT_DIR=output
 LOG_NAME=ads_search.log
@@ -45,6 +49,10 @@ CMD="python -u ads.py \
     --uma_model $UMA_MODEL \
     --checkpoint $CHECKPOINT \
     --device $DEVICE \
+    --active_symbols $ACTIVE_SYMBOLS \
+    --site_radius $SITE_RADIUS \
+    --detach_cutoff $DETACH_CUTOFF \
+    --penalty_energy $PENALTY_ENERGY \
     --output_dir $OUTPUT_DIR"
 
 if [ "$INCLUDE_D3" = "1" ]; then
