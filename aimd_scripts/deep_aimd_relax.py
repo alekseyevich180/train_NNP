@@ -20,7 +20,8 @@ CONFIG={
 "output_root":"acid_AIMD_dataset"
 },
 "relaxation":{
-"surface_fmax":0.05
+"surface_fmax":0.05,
+"whole_fmax":0.05
 },
 "md_control":{
 "initial_temp":280,
@@ -43,9 +44,19 @@ CONFIG={
 
 
 # =========================================================
-# Surface relaxation
-# 只优化表面 ZnO
+# Relaxation helpers
 # =========================================================
+
+def get_aimd_fixed_indices(atoms):
+
+    fixed_z_lower = CONFIG["system"]["fixed_z_lower_bound"]
+    fixed_z_upper = CONFIG["system"]["fixed_z_upper_bound"]
+
+    return [
+        atom.index
+        for atom in atoms
+        if fixed_z_lower <= atom.position[2] <= fixed_z_upper
+    ]
 
 
 def relax_surface(atoms):
@@ -83,6 +94,21 @@ def relax_surface(atoms):
     atoms.set_constraint()
 
     print("Surface relaxation finished")
+
+
+def relax_whole_structure(atoms):
+
+    print("Starting whole-structure relaxation...")
+
+    fixed = get_aimd_fixed_indices(atoms)
+    atoms.set_constraint(FixAtoms(indices=fixed))
+
+    opt=LBFGS(atoms,logfile="whole_relax.log")
+    opt.run(fmax=CONFIG["relaxation"]["whole_fmax"])
+
+    atoms.set_constraint()
+
+    print("Whole-structure relaxation finished")
 
 
 # =========================================================
@@ -189,17 +215,19 @@ def run():
 
 
     # -------------------------------------------------
-    # 2 AIMD 阶段约束
+    # 2 whole-structure relaxation
+    # 除底层固定区外整体再优化一次
+    # -------------------------------------------------
+
+    relax_whole_structure(atoms)
+
+
+    # -------------------------------------------------
+    # 3 AIMD 阶段约束
     # 只固定底层 ZnO
     # -------------------------------------------------
 
-    fixed_z_lower = CONFIG["system"]["fixed_z_lower_bound"]
-    fixed_z_upper = CONFIG["system"]["fixed_z_upper_bound"]
-    fixed=[
-        a.index
-        for a in atoms
-        if fixed_z_lower <= a.position[2] <= fixed_z_upper
-    ]
+    fixed = get_aimd_fixed_indices(atoms)
     atoms.set_constraint(FixAtoms(indices=fixed))
 
 
