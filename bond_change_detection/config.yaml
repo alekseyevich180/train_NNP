@@ -18,5 +18,9 @@ output:
   key_frames_dir: "key_frames"
 
 selection:
-  save_changed_frames: true
+  save_changed_frames: false
   progress_interval: 10
+  start_frame: 0
+  end_frame:
+  frame_stride: 10
+  max_frames: 1000

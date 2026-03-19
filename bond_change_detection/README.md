@@ -2,14 +2,14 @@
 
 This module detects bond formation and bond breaking events from AIMD trajectories.
 
-本模块用于从 AIMD 轨迹中识别成键与断键事件，并导出发生变化的关键结构帧。
+本模块用于从 AIMD 轨迹中识别成键与断键事件，并按需导出发生变化的关键结构帧。
 
 ## Goal
 
 - Load frames exported by `aimd_scripts`
 - Build per-frame bonding graphs from distance cutoffs
 - Compare consecutive frames
-- Export bond change events and candidate key structures
+- Export bond change events and candidate key structures when needed
 
 ## 模块目标
 
@@ -26,6 +26,7 @@ This module detects bond formation and bond breaking events from AIMD trajectori
 4. Compare the current frame with the previous frame
 5. Mark new bonds as `formed` and missing bonds as `broken`
 6. Save an event table and optionally export changed frames
+7. Support frame subsampling for large trajectories
 
 ## 逻辑说明
 
@@ -36,6 +37,7 @@ This module detects bond formation and bond breaking events from AIMD trajectori
 5. 当前帧新增的键记为 `formed`
 6. 前一帧存在但当前帧消失的键记为 `broken`
 7. 输出事件表，并按需保存发生变化的关键帧
+8. 支持对大轨迹按步长抽样和限量分析
 
 ## Expected inputs
 
@@ -61,7 +63,7 @@ AIMD_dataset/cif_frames/
 ## Expected outputs
 
 - `outputs/bond_events.csv`
-- `outputs/key_frames/`
+- `outputs/key_frames/` when `save_changed_frames: true`
 - `outputs/summary.json`
 
 ## 输出说明
@@ -69,7 +71,7 @@ AIMD_dataset/cif_frames/
 - `outputs/bond_events.csv`
   记录每一条成键或断键事件
 - `outputs/key_frames/`
-  保存发生键变化的关键帧结构
+  仅在 `save_changed_frames: true` 时保存发生键变化的关键帧结构
 - `outputs/summary.json`
   记录输入路径、读入帧数、检测到的事件数和运行状态
 
@@ -78,12 +80,9 @@ AIMD_dataset/cif_frames/
 - `frame_index`: 当前帧序号
 - `frame_label`: 当前帧标签
 - `previous_frame_label`: 前一帧标签
-- `event_type`: `formed` 或 `broken`
-- `atom_i`, `atom_j`: 发生变化的原子编号
-- `symbol_i`, `symbol_j`: 对应元素
-- `pair`: 元素对类型，例如 `C-O`、`Zn-O`
-- `distance_previous`: 前一帧中的键长
-- `distance_current`: 当前帧中的键长
+- `event_count`: 当前帧中检测到的事件数量
+- `events`: 同一帧所有事件压缩在一列中，每个事件写成
+  `(event_type,atom_i,atom_j,symbol_i,symbol_j,pair,distance)`
 
 ## Minimal workflow
 
@@ -111,12 +110,20 @@ python run.py
 input:
   trajectory: "../aimd_scripts/AIMD_dataset/cif_frames"
   format: "cif_dir"
+
+selection:
+  save_changed_frames: false
+  frame_stride: 10
+  max_frames: 1000
 ```
 
 其中：
 
 - `trajectory` 指向 AIMD 导出的 `cif_frames` 目录
 - `format: "cif_dir"` 表示输入是逐帧 CIF 文件目录
+- `save_changed_frames: false` 表示默认不再额外导出变化帧 CIF
+- `frame_stride: 10` 表示每 10 帧取 1 帧，减少分析规模
+- `max_frames: 1000` 表示最多分析 1000 帧，避免超大目录跑满
 
 如果你改用单个多帧轨迹文件，则可以切换成：
 
@@ -126,14 +133,29 @@ input:
   format: "trajectory_file"
 ```
 
+对于大规模 AIMD 输出，推荐优先调节这些参数：
+
+- `start_frame`
+  从第几帧开始分析，默认 `0`
+- `end_frame`
+  分析到第几帧结束，留空表示一直到最后
+- `frame_stride`
+  抽样步长，默认 `1`；设成 `10` 表示每 10 帧取 1 帧
+- `max_frames`
+  最多读取多少帧，留空表示不设上限
+- `save_changed_frames`
+  是否把发生变化的帧再单独导出成 CIF，默认建议关闭
+
 ## Notes
 
 - The current implementation compares neighboring frames only.
 - If fewer than two frames are found, the module writes an empty CSV and a `no_input` or `insufficient_frames` status.
 - Cutoffs should be tuned for the chemistry of the target system.
+- For very large CIF directories, prefer increasing `frame_stride` and keeping `save_changed_frames` disabled.
 
 ## 备注
 
 - 当前实现只比较相邻帧，不做跨帧长程回溯。
 - 如果输入帧少于两帧，程序不会报错，而是输出空事件表，并在 `summary.json` 中写入状态说明。
 - cutoff 直接影响“是否判定为成键”，需要根据体系化学环境进行调整。
+- 如果输入目录非常大，建议优先增大 `frame_stride`，并保持 `save_changed_frames: false`。
