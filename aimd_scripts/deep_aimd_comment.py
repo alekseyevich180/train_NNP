@@ -30,7 +30,6 @@ CONFIG={
 },
 "output":{
 "save_interval":100,            # 每多少 MD step 保存一次结构
-"deepmd_set_size":1000,         # 每个 set.xxx 包含多少 frames
 "deepmd_dir":"deepmd_dataset",  # DeepMD 数据目录
 "cif_dir":"cif_frames"          # CIF 输出目录（用于 PCA / 可视化）
 }
@@ -41,16 +40,9 @@ CONFIG={
 # 将 MD 轨迹转换为 DeepMD 格式
 # ------------------------------
 class DeepMDWriter:
-    def __init__(self,atoms,root,set_size):
+    def __init__(self,atoms,root):
         self.root=root
-        self.set_size=set_size
         os.makedirs(root,exist_ok=True)
-        self.coord=[]
-        self.force=[]
-        self.energy=[]
-        self.box=[]
-        self.frame=0
-        self.set_id=0
         self.write_type_files(atoms)
 
     # 写入 type.raw 与 type_map.raw
@@ -65,35 +57,15 @@ class DeepMDWriter:
             for s in uniq:
                 f.write(s+"\n")
 
-    # 添加一帧 MD 数据
-    def add_frame(self,atoms):
-        self.coord.append(atoms.get_positions().reshape(-1))   # 原子坐标
-        self.force.append(atoms.get_forces().reshape(-1))       # 原子力
-        self.energy.append(atoms.get_potential_energy())        # 总能量
-        self.box.append(atoms.get_cell().array.reshape(-1))     # 晶胞
-        self.frame+=1
-        if self.frame>=self.set_size:
-            self.write_set()
-            self.reset()
-
-    # 清空缓存
-    def reset(self):
-        self.coord=[]
-        self.force=[]
-        self.energy=[]
-        self.box=[]
-        self.frame=0
-
-    # 写入 set.xxx
-    def write_set(self):
-        set_dir=os.path.join(self.root,f"set.{self.set_id:03d}")
+    # 每个保存点直接写出一个单帧 set.<step>
+    def add_frame(self,atoms,step_id):
+        set_dir=os.path.join(self.root,f"set.{step_id}")
         os.makedirs(set_dir,exist_ok=True)
-        np.save(os.path.join(set_dir,"coord.npy"),np.array(self.coord))
-        np.save(os.path.join(set_dir,"force.npy"),np.array(self.force))
-        np.save(os.path.join(set_dir,"energy.npy"),np.array(self.energy))
-        np.save(os.path.join(set_dir,"box.npy"),np.array(self.box))
+        np.save(os.path.join(set_dir,"coord.npy"),np.array([atoms.get_positions().reshape(-1)]))
+        np.save(os.path.join(set_dir,"force.npy"),np.array([atoms.get_forces().reshape(-1)]))
+        np.save(os.path.join(set_dir,"energy.npy"),np.array([atoms.get_potential_energy()]))
+        np.save(os.path.join(set_dir,"box.npy"),np.array([atoms.get_cell().array.reshape(-1)]))
         print(f"write {set_dir}")
-        self.set_id+=1
 
 # ------------------------------
 # 主程序
@@ -118,7 +90,7 @@ def run():
     atoms.set_constraint(FixAtoms(indices=fixed))
 
     # 初始化 DeepMD writer
-    writer=DeepMDWriter(atoms,deepmd_root,CONFIG["output"]["deepmd_set_size"])
+    writer=DeepMDWriter(atoms,deepmd_root)
 
     ctrl=CONFIG["md_control"]
     curr_t=ctrl["initial_temp"]
@@ -137,7 +109,7 @@ def run():
         step_counter["step"]+=1
         if step_counter["step"]%CONFIG["output"]["save_interval"]!=0:
             return
-        writer.add_frame(atoms) # DeepMD 数据
+        writer.add_frame(atoms,step_counter["step"]) # DeepMD 数据
         cif_file=os.path.join(cif_root,f"frame_{step_counter['step']:08d}.cif")
         write(cif_file,atoms)   # CIF 用于 PCA / 可视化
 

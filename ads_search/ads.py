@@ -48,7 +48,13 @@ def build_calculator(uma_model: str, device: str, include_d3: bool, checkpoint: 
     return calc
 
 
-def get_opt_energy(atoms: Atoms, calculator, fmax: float = 1e-3, opt_mode: str = "normal") -> float:
+def get_opt_energy(
+    atoms: Atoms,
+    calculator,
+    fmax: float = 1e-3,
+    opt_mode: str = "normal",
+    max_steps: int | None = None,
+) -> float:
     atoms.calc = calculator
     if opt_mode == "scale":
         optimizer = LBFGS(StrainFilter(atoms, mask=[1, 1, 1, 0, 0, 0]), logfile=None)
@@ -56,7 +62,7 @@ def get_opt_energy(atoms: Atoms, calculator, fmax: float = 1e-3, opt_mode: str =
         optimizer = LBFGS(ExpCellFilter(atoms), logfile=None)
     else:
         optimizer = LBFGS(atoms, logfile=None)
-    optimizer.run(fmax=fmax)
+    optimizer.run(fmax=fmax, steps=max_steps)
     return atoms.get_total_energy()
 
 
@@ -70,15 +76,17 @@ def json_to_atoms(atoms_str: str) -> Atoms:
     return read(io.StringIO(atoms_str), format="json")
 
 
-def load_slab(surface_path: Path, calculator, fmax: float) -> tuple[Atoms, float]:
+def load_slab(surface_path: Path, calculator, fmax: float, max_steps: int | None) -> tuple[Atoms, float]:
     slab = read(surface_path)
-    energy = get_opt_energy(slab, calculator, fmax=fmax, opt_mode="normal")
+    energy = get_opt_energy(slab, calculator, fmax=fmax, opt_mode="normal", max_steps=max_steps)
     return slab, energy
 
 
-def load_molecule(molecule_path: Path, calculator, fmax: float) -> tuple[Atoms, float]:
+def load_molecule(
+    molecule_path: Path, calculator, fmax: float, max_steps: int | None
+) -> tuple[Atoms, float]:
     mol = read(molecule_path)
-    energy = get_opt_energy(mol, calculator, fmax=fmax)
+    energy = get_opt_energy(mol, calculator, fmax=fmax, max_steps=max_steps)
     return mol, energy
 
 
@@ -123,6 +131,7 @@ def objective(trial: optuna.Trial) -> float:
     site_radius = float(trial.study.user_attrs["site_radius"])
     detach_cutoff = float(trial.study.user_attrs["detach_cutoff"])
     penalty_energy = float(trial.study.user_attrs["penalty_energy"])
+    max_steps = trial.study.user_attrs["max_steps"]
 
     phi = 180.0 * trial.suggest_float("phi", -1.0, 1.0)
     theta = np.degrees(np.arccos(trial.suggest_float("theta", -1.0, 1.0)))
@@ -142,7 +151,7 @@ def objective(trial: optuna.Trial) -> float:
     mol.translate([0.0, 0.0, active_position[2] + z_hig - min_mol_z])
 
     combined = slab + mol
-    e_total = get_opt_energy(combined, CALCULATOR, fmax=1e-3)
+    e_total = get_opt_energy(combined, CALCULATOR, fmax=1e-3, max_steps=max_steps)
     adsorption_energy = e_total - e_slab - e_mol
     structure_json = atoms_to_json(combined)
     write(output_dir / f"{trial.number}.cif", combined)
@@ -222,6 +231,7 @@ def main():
     parser.add_argument("--site_radius", type=float, default=2.0)
     parser.add_argument("--detach_cutoff", type=float, default=4.0)
     parser.add_argument("--penalty_energy", type=float, default=1e6)
+    parser.add_argument("--max_steps", type=int, default=200)
     parser.add_argument("--include_d3", action="store_true")
     args = parser.parse_args()
     args.active_symbols = normalize_symbols(args.active_symbols)
@@ -231,12 +241,13 @@ def main():
 
     for molecule_path in args.molecules:
         print(f"\nStarting optimization for {molecule_path.name}...\n")
-        slab, e_slab = load_slab(args.surface, CALCULATOR, args.fmax)
-        mol, e_mol = load_molecule(molecule_path, CALCULATOR, args.fmax)
+        slab, e_slab = load_slab(args.surface, CALCULATOR, args.fmax, args.max_steps)
+        mol, e_mol = load_molecule(molecule_path, CALCULATOR, args.fmax, args.max_steps)
         output_dir = args.output_dir / molecule_path.stem
         output_dir.mkdir(parents=True, exist_ok=True)
         print(f"Requested active symbols: {', '.join(args.active_symbols)}")
         print(f"Slab symbols: {format_symbol_counts(slab)}")
+        print(f"Optimization step limit per structure: {args.max_steps}")
         active_indices = get_active_indices(slab, args.active_symbols, args.surface)
 
         study = optuna.create_study(direction="minimize")
@@ -249,6 +260,7 @@ def main():
         study.set_user_attr("site_radius", args.site_radius)
         study.set_user_attr("detach_cutoff", args.detach_cutoff)
         study.set_user_attr("penalty_energy", args.penalty_energy)
+        study.set_user_attr("max_steps", args.max_steps)
         study.optimize(objective, n_trials=args.n_trials)
 
         print(f"Best trial for {molecule_path.name}: #{study.best_trial.number}")

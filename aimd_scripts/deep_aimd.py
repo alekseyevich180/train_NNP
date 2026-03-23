@@ -13,28 +13,24 @@ from pfp_api_client.pfp.calculators.ase_calculator import ASECalculator
 
 CONFIG={
 "system":{
-"input_file":"acid.cif",
+"input_file":"intermediates_enol2_H.cif",
+"output_root":"intermediates_enol2_H_dataset",
 "fixed_z_lower_bound":4.0,
 "fixed_z_upper_bound":9.0,
-"surface_relax_depth":12.0,
-"output_root":"acid_AIMD_dataset"
-},
-"relaxation":{
-"surface_fmax":0.05
+"surface_relax_depth":12.0
 },
 "md_control":{
 "initial_temp":280,
 "final_temp":1080,
 "ramp_interval":100,
 "ramp_steps":20000,
-"stab_steps":10000,
-"prod_steps":2000000,
+"stab_steps":20000,
+"prod_steps":40000,
 "timestep":0.5,
 "tau_t":100.0
 },
 "output":{
 "save_interval":50,
-"deepmd_set_size":1000,
 "deepmd_dir":"deepmd_dataset",
 "cif_dir":"cif_frames",
 "cif_set_interval":100000
@@ -46,7 +42,6 @@ CONFIG={
 # Surface relaxation
 # 只优化表面 ZnO
 # =========================================================
-
 
 def relax_surface(atoms):
 
@@ -78,7 +73,7 @@ def relax_surface(atoms):
     atoms.set_constraint(FixAtoms(indices=freeze))
 
     opt=LBFGS(atoms,logfile="surface_relax.log")
-    opt.run(fmax=CONFIG["relaxation"]["surface_fmax"])
+    opt.run(fmax=0.05)
 
     atoms.set_constraint()
 
@@ -91,20 +86,11 @@ def relax_surface(atoms):
 
 class DeepMDWriter:
 
-    def __init__(self,atoms,root,set_size):
+    def __init__(self,atoms,root):
 
         self.root=root
-        self.set_size=set_size
 
         os.makedirs(root,exist_ok=True)
-
-        self.coord=[]
-        self.force=[]
-        self.energy=[]
-        self.box=[]
-
-        self.frame=0
-        self.set_id=0
 
         self.write_type_files(atoms)
 
@@ -122,41 +108,29 @@ class DeepMDWriter:
             for s in uniq:
                 f.write(s+"\n")
 
-    def add_frame(self,atoms):
+    def add_frame(self,atoms,step_id):
 
-        self.coord.append(atoms.get_positions().reshape(-1))
-        self.force.append(atoms.get_forces().reshape(-1))
-        self.energy.append(atoms.get_potential_energy())
-        self.box.append(atoms.get_cell().array.reshape(-1))
-
-        self.frame+=1
-
-        if self.frame>=self.set_size:
-
-            self.write_set()
-            self.reset()
-
-    def reset(self):
-
-        self.coord=[]
-        self.force=[]
-        self.energy=[]
-        self.box=[]
-        self.frame=0
-
-    def write_set(self):
-
-        set_dir=os.path.join(self.root,f"set.{self.set_id:03d}")
+        set_dir=os.path.join(self.root,f"set.{step_id}")
         os.makedirs(set_dir,exist_ok=True)
 
-        np.save(os.path.join(set_dir,"coord.npy"),np.array(self.coord))
-        np.save(os.path.join(set_dir,"force.npy"),np.array(self.force))
-        np.save(os.path.join(set_dir,"energy.npy"),np.array(self.energy))
-        np.save(os.path.join(set_dir,"box.npy"),np.array(self.box))
+        np.save(
+            os.path.join(set_dir,"coord.npy"),
+            np.array([atoms.get_positions().reshape(-1)])
+        )
+        np.save(
+            os.path.join(set_dir,"force.npy"),
+            np.array([atoms.get_forces().reshape(-1)])
+        )
+        np.save(
+            os.path.join(set_dir,"energy.npy"),
+            np.array([atoms.get_potential_energy()])
+        )
+        np.save(
+            os.path.join(set_dir,"box.npy"),
+            np.array([atoms.get_cell().array.reshape(-1)])
+        )
 
         print(f"write {set_dir}")
-
-        self.set_id+=1
 
 
 # =========================================================
@@ -203,7 +177,7 @@ def run():
     atoms.set_constraint(FixAtoms(indices=fixed))
 
 
-    writer=DeepMDWriter(atoms,deepmd_root,CONFIG["output"]["deepmd_set_size"])
+    writer=DeepMDWriter(atoms,deepmd_root)
 
 
     ctrl=CONFIG["md_control"]
@@ -234,7 +208,7 @@ def run():
             return
 
 
-        writer.add_frame(atoms)
+        writer.add_frame(atoms,step_counter["step"])
 
 
         set_id=step_counter["step"]//CONFIG["output"]["cif_set_interval"]

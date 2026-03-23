@@ -35,7 +35,6 @@ CONFIG={
 },
 "output":{
 "save_interval":50,
-"deepmd_set_size":1000,
 "deepmd_dir":"deepmd_dataset",
 "cif_dir":"cif_frames",
 "cif_set_interval":100000
@@ -117,20 +116,11 @@ def relax_whole_structure(atoms):
 
 class DeepMDWriter:
 
-    def __init__(self,atoms,root,set_size):
+    def __init__(self,atoms,root):
 
         self.root=root
-        self.set_size=set_size
 
         os.makedirs(root,exist_ok=True)
-
-        self.coord=[]
-        self.force=[]
-        self.energy=[]
-        self.box=[]
-
-        self.frame=0
-        self.set_id=0
 
         self.write_type_files(atoms)
 
@@ -148,41 +138,29 @@ class DeepMDWriter:
             for s in uniq:
                 f.write(s+"\n")
 
-    def add_frame(self,atoms):
+    def add_frame(self,atoms,step_id):
 
-        self.coord.append(atoms.get_positions().reshape(-1))
-        self.force.append(atoms.get_forces().reshape(-1))
-        self.energy.append(atoms.get_potential_energy())
-        self.box.append(atoms.get_cell().array.reshape(-1))
-
-        self.frame+=1
-
-        if self.frame>=self.set_size:
-
-            self.write_set()
-            self.reset()
-
-    def reset(self):
-
-        self.coord=[]
-        self.force=[]
-        self.energy=[]
-        self.box=[]
-        self.frame=0
-
-    def write_set(self):
-
-        set_dir=os.path.join(self.root,f"set.{self.set_id:03d}")
+        set_dir=os.path.join(self.root,f"set.{step_id}")
         os.makedirs(set_dir,exist_ok=True)
 
-        np.save(os.path.join(set_dir,"coord.npy"),np.array(self.coord))
-        np.save(os.path.join(set_dir,"force.npy"),np.array(self.force))
-        np.save(os.path.join(set_dir,"energy.npy"),np.array(self.energy))
-        np.save(os.path.join(set_dir,"box.npy"),np.array(self.box))
+        np.save(
+            os.path.join(set_dir,"coord.npy"),
+            np.array([atoms.get_positions().reshape(-1)])
+        )
+        np.save(
+            os.path.join(set_dir,"force.npy"),
+            np.array([atoms.get_forces().reshape(-1)])
+        )
+        np.save(
+            os.path.join(set_dir,"energy.npy"),
+            np.array([atoms.get_potential_energy()])
+        )
+        np.save(
+            os.path.join(set_dir,"box.npy"),
+            np.array([atoms.get_cell().array.reshape(-1)])
+        )
 
         print(f"write {set_dir}")
-
-        self.set_id+=1
 
 
 # =========================================================
@@ -231,7 +209,7 @@ def run():
     atoms.set_constraint(FixAtoms(indices=fixed))
 
 
-    writer=DeepMDWriter(atoms,deepmd_root,CONFIG["output"]["deepmd_set_size"])
+    writer=DeepMDWriter(atoms,deepmd_root)
 
 
     ctrl=CONFIG["md_control"]
@@ -262,7 +240,7 @@ def run():
             return
 
 
-        writer.add_frame(atoms)
+        writer.add_frame(atoms,step_counter["step"])
 
 
         set_id=step_counter["step"]//CONFIG["output"]["cif_set_interval"]
