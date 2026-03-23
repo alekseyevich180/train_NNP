@@ -82,16 +82,26 @@ def load_molecule(molecule_path: Path, calculator, fmax: float) -> tuple[Atoms, 
     return mol, energy
 
 
-def get_active_indices(atoms: Atoms, active_symbols: list[str]) -> list[int]:
+def get_active_indices(
+    atoms: Atoms, active_symbols: list[str], structure_path: Path | None = None
+) -> list[int]:
     active_symbol_set = set(normalize_symbols(active_symbols))
     indices = [idx for idx, atom in enumerate(atoms) if atom.symbol in active_symbol_set]
     if not indices:
         available_symbols = sorted(set(atoms.get_chemical_symbols()))
+        hint = ""
+        if structure_path is not None and structure_path.suffix.lower() in {".vasp", ".poscar", ".contcar"}:
+            hint = (
+                " Hint: VASP/POSCAR files do not store element labels per atom. "
+                "If you replaced Ni with Ru, you must also update the species/count header "
+                "and regroup atoms by element so ASE reads Ru from the file."
+            )
         raise ValueError(
             "No active-site atoms found for symbols: "
             f"{', '.join(active_symbol_set)}. "
             f"Available symbols in slab: {', '.join(available_symbols)}. "
-            f"Symbol counts: {format_symbol_counts(atoms)}"
+            f"Symbol counts: {format_symbol_counts(atoms)}."
+            f"{hint}"
         )
     return indices
 
@@ -227,7 +237,7 @@ def main():
         output_dir.mkdir(parents=True, exist_ok=True)
         print(f"Requested active symbols: {', '.join(args.active_symbols)}")
         print(f"Slab symbols: {format_symbol_counts(slab)}")
-        active_indices = get_active_indices(slab, args.active_symbols)
+        active_indices = get_active_indices(slab, args.active_symbols, args.surface)
 
         study = optuna.create_study(direction="minimize")
         study.set_user_attr("slab", atoms_to_json(slab))
