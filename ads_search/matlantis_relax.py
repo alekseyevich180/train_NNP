@@ -96,7 +96,9 @@ def main() -> None:
         default=CONFIG["constraints"]["fix_symbols"],
         help="Fix atoms whose element symbols match these values.",
     )
-    args = parser.parse_args()
+    args, unknown_args = parser.parse_known_args()
+    if unknown_args:
+        print(f"Ignoring unknown arguments: {' '.join(unknown_args)}")
 
     atoms = read(args.input)
     atoms.calc = build_calculator()
