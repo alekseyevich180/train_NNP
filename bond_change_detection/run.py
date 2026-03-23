@@ -454,6 +454,48 @@ def append_detail_event_row(writer: csv.DictWriter, handle: Any, row: dict[str, 
     handle.flush()
 
 
+def initialize_interface_grouped_csv(csv_path: Path) -> tuple[Any, csv.DictWriter, str]:
+    fieldnames = [
+        "frame_index",
+        "frame_label",
+        "previous_frame_label",
+        "interface_event_count",
+        "events(interface_type,event_type,atom_i,atom_j,group_i,group_j,symbol_i,symbol_j,pair,distance_broken,distance_formed)",
+    ]
+    handle = csv_path.open("w", newline="", encoding="utf-8")
+    writer = csv.DictWriter(handle, fieldnames=fieldnames)
+    writer.writeheader()
+    handle.flush()
+    return handle, writer, fieldnames[-1]
+
+
+def append_grouped_interface_row(
+    writer: csv.DictWriter,
+    handle: Any,
+    events_field: str,
+    frame_index: int,
+    frame_label: str,
+    previous_frame_label: str,
+    interface_events: list[dict[str, Any]],
+) -> None:
+    row = {
+        "frame_index": frame_index,
+        "frame_label": frame_label,
+        "previous_frame_label": previous_frame_label,
+        "interface_event_count": len(interface_events),
+        events_field: " ".join(
+            "{"
+            f"{event['interface_type']},{event['event_type']},{event['atom_i']},{event['atom_j']},"
+            f"{event['group_i']},{event['group_j']},{event['symbol_i']},{event['symbol_j']},"
+            f"{event['pair']},{event['distance_previous']},{event['distance_current']}"
+            "}"
+            for event in interface_events
+        ),
+    }
+    writer.writerow(row)
+    handle.flush()
+
+
 def export_key_frame(frame_label: str, atoms: Any, output_dir: Path) -> None:
     output_path = output_dir / f"{frame_label}.cif"
     write(output_path, atoms)
@@ -550,25 +592,7 @@ def main() -> None:
             "distance_formed",
         ],
     )
-    interface_handle, interface_writer = initialize_event_detail_csv(
-        interface_events_csv,
-        [
-            "frame_index",
-            "frame_label",
-            "previous_frame_label",
-            "interface_type",
-            "event_type",
-            "atom_i",
-            "atom_j",
-            "group_i",
-            "group_j",
-            "symbol_i",
-            "symbol_j",
-            "pair",
-            "distance_broken",
-            "distance_formed",
-        ],
-    )
+    interface_handle, interface_writer, interface_events_field = initialize_interface_grouped_csv(interface_events_csv)
     interface_counts_handle, interface_counts_writer = initialize_event_detail_csv(
         interface_counts_csv,
         [
@@ -601,6 +625,7 @@ def main() -> None:
             broken_keys = sorted(set(previous_bonds) - set(current_bonds))
             frame_events: list[dict[str, Any]] = []
             frame_interface_counts = {name: 0 for name in INTERFACE_TYPES}
+            grouped_interface_events: list[dict[str, Any]] = []
 
             for bond_key in formed_keys:
                 bond = current_bonds[bond_key]
@@ -682,28 +707,19 @@ def main() -> None:
 
                 interface_type = event["interface_type"]
                 if interface_type:
-                    append_detail_event_row(
-                        interface_writer,
-                        interface_handle,
-                        {
-                            "frame_index": event["frame_index"],
-                            "frame_label": event["frame_label"],
-                            "previous_frame_label": event["previous_frame_label"],
-                            "interface_type": interface_type,
-                            "event_type": event["event_type"],
-                            "atom_i": event["atom_i"],
-                            "atom_j": event["atom_j"],
-                            "group_i": event["group_i"],
-                            "group_j": event["group_j"],
-                            "symbol_i": event["symbol_i"],
-                            "symbol_j": event["symbol_j"],
-                            "pair": event["pair"],
-                            "distance_broken": event["distance_previous"],
-                            "distance_formed": event["distance_current"],
-                        },
-                    )
+                    grouped_interface_events.append(event)
                     frame_interface_counts[interface_type] += 1
                     interface_counts[interface_type] += 1
+
+            append_grouped_interface_row(
+                interface_writer,
+                interface_handle,
+                interface_events_field,
+                frame_index,
+                frame_label,
+                previous_label,
+                grouped_interface_events,
+            )
 
             append_detail_event_row(
                 interface_counts_writer,
