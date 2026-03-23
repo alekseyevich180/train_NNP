@@ -1,5 +1,6 @@
 import argparse
 import io
+from collections import Counter
 from pathlib import Path
 
 import matplotlib.image as mpimg
@@ -18,6 +19,21 @@ torch.set_float32_matmul_precision("medium")
 torch.backends.cuda.matmul.allow_tf32 = True
 
 CALCULATOR = None
+
+
+def normalize_symbols(symbols: list[str]) -> list[str]:
+    normalized = []
+    for symbol in symbols:
+        cleaned = symbol.strip().strip(",")
+        if not cleaned:
+            continue
+        normalized.append(cleaned[0].upper() + cleaned[1:].lower())
+    return normalized
+
+
+def format_symbol_counts(atoms: Atoms) -> str:
+    counts = Counter(atoms.get_chemical_symbols())
+    return ", ".join(f"{symbol}:{counts[symbol]}" for symbol in sorted(counts))
 
 
 def build_calculator(uma_model: str, device: str, include_d3: bool, checkpoint: Path | None = None):
@@ -67,10 +83,16 @@ def load_molecule(molecule_path: Path, calculator, fmax: float) -> tuple[Atoms, 
 
 
 def get_active_indices(atoms: Atoms, active_symbols: list[str]) -> list[int]:
-    active_symbol_set = set(active_symbols)
+    active_symbol_set = set(normalize_symbols(active_symbols))
     indices = [idx for idx, atom in enumerate(atoms) if atom.symbol in active_symbol_set]
     if not indices:
-        raise ValueError(f"No active-site atoms found for symbols: {', '.join(active_symbols)}")
+        available_symbols = sorted(set(atoms.get_chemical_symbols()))
+        raise ValueError(
+            "No active-site atoms found for symbols: "
+            f"{', '.join(active_symbol_set)}. "
+            f"Available symbols in slab: {', '.join(available_symbols)}. "
+            f"Symbol counts: {format_symbol_counts(atoms)}"
+        )
     return indices
 
 
@@ -192,6 +214,7 @@ def main():
     parser.add_argument("--penalty_energy", type=float, default=1e6)
     parser.add_argument("--include_d3", action="store_true")
     args = parser.parse_args()
+    args.active_symbols = normalize_symbols(args.active_symbols)
 
     CALCULATOR = build_calculator(args.uma_model, args.device, args.include_d3, args.checkpoint)
     args.output_dir.mkdir(parents=True, exist_ok=True)
@@ -202,6 +225,8 @@ def main():
         mol, e_mol = load_molecule(molecule_path, CALCULATOR, args.fmax)
         output_dir = args.output_dir / molecule_path.stem
         output_dir.mkdir(parents=True, exist_ok=True)
+        print(f"Requested active symbols: {', '.join(args.active_symbols)}")
+        print(f"Slab symbols: {format_symbol_counts(slab)}")
         active_indices = get_active_indices(slab, args.active_symbols)
 
         study = optuna.create_study(direction="minimize")
