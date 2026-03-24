@@ -1,9 +1,62 @@
 {
   "module": "bond_change_detection",
-  "status": "no_input",
-  "input_path": "C:\\Users\\yingkaiwu\\Desktop\\Active-learning\\NNP\\aimd_data\\acid1_dataset\\acid1_dataset\\cif_frames",
+  "status": "completed",
+  "input_path": "C:\\Users\\yingkaiwu\\Desktop\\Active-learning\\NNP\\aimd_data\\ketone_dataset\\cif_frames",
   "input_format": "cif_dir",
-  "frames_loaded": 0,
-  "events_detected": 0,
-  "message": "Provide at least two trajectory frames to detect bond changes."
+  "frames_loaded": 1000,
+  "events_detected": 33794,
+  "frames_with_changes": 998,
+  "pair_cutoffs": {
+    "C-C": 1.85,
+    "C-O": 1.65,
+    "C-H": 1.35,
+    "H-O": 1.25,
+    "O-Zn": 2.2,
+    "C-Zn": 2.3
+  },
+  "saved_key_frames": false,
+  "exported_pair_event_files": {
+    "C-C": {
+      "path": "C:\\Users\\yingkaiwu\\Desktop\\Active-learning\\NNP\\scripts\\bond_change_detection\\outputs\\bond_events_C-C.csv",
+      "events": 0
+    },
+    "C-O": {
+      "path": "C:\\Users\\yingkaiwu\\Desktop\\Active-learning\\NNP\\scripts\\bond_change_detection\\outputs\\bond_events_C-O.csv",
+      "events": 0
+    }
+  },
+  "first_frame_atom_groups": {
+    "path": "C:\\Users\\yingkaiwu\\Desktop\\Active-learning\\NNP\\scripts\\bond_change_detection\\outputs\\atom_groups_first_frame.json",
+    "counts": {
+      "surface": 960,
+      "organic": 28,
+      "water": 72,
+      "unassigned": 0
+    }
+  },
+  "exported_interface_event_files": {
+    "all_interfaces": {
+      "path": "C:\\Users\\yingkaiwu\\Desktop\\Active-learning\\NNP\\scripts\\bond_change_detection\\outputs\\bond_events_interfaces.csv",
+      "events": 3056
+    },
+    "interface_counts": {
+      "path": "C:\\Users\\yingkaiwu\\Desktop\\Active-learning\\NNP\\scripts\\bond_change_detection\\outputs\\bond_interface_counts.csv"
+    },
+    "organic-surface": {
+      "events": 173
+    },
+    "water-surface": {
+      "events": 2883
+    },
+    "organic-water": {
+      "events": 0
+    }
+  },
+  "progress_interval": 10,
+  "frame_selection": {
+    "start_frame": 0,
+    "end_frame": null,
+    "frame_stride": 1,
+    "max_frames": 1000
+  }
 }
