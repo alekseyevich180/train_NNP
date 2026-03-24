@@ -190,7 +190,7 @@ def classify_component(symbols: list[str], component: set[int]) -> str:
 def classify_initial_atoms(atoms: Any, bond_map: dict[tuple[int, int], BondRecord]) -> tuple[dict[int, str], dict[str, list[int]]]:
     symbols = atoms.get_chemical_symbols()
     adjacency = build_adjacency(len(symbols), bond_map)
-    atom_groups: dict[int, str] = {}
+    atom_groups: dict[int, str] = {index: "unassigned" for index in range(len(symbols))}
     grouped_indices: dict[str, list[int]] = {
         "surface": [],
         "organic": [],
@@ -198,11 +198,52 @@ def classify_initial_atoms(atoms: Any, bond_map: dict[tuple[int, int], BondRecor
         "unassigned": [],
     }
 
-    for component in connected_components(adjacency):
-        label = classify_component(symbols, component)
-        for atom_index in sorted(component):
-            atom_groups[atom_index] = label
-            grouped_indices[label].append(atom_index)
+    surface_indices: set[int] = set()
+    organic_indices: set[int] = set()
+    water_indices: set[int] = set()
+
+    # Surface: start from all Zn atoms and include directly bonded O atoms.
+    for atom_index, symbol in enumerate(symbols):
+        if symbol != "Zn":
+            continue
+        surface_indices.add(atom_index)
+        for neighbor in adjacency[atom_index]:
+            if symbols[neighbor] == "O":
+                surface_indices.add(neighbor)
+
+    # Water: an O bonded to exactly two H atoms, excluding O atoms already assigned to the surface.
+    for atom_index, symbol in enumerate(symbols):
+        if symbol != "O" or atom_index in surface_indices:
+            continue
+        hydrogen_neighbors = [neighbor for neighbor in adjacency[atom_index] if symbols[neighbor] == "H"]
+        carbon_neighbors = [neighbor for neighbor in adjacency[atom_index] if symbols[neighbor] == "C"]
+        zinc_neighbors = [neighbor for neighbor in adjacency[atom_index] if symbols[neighbor] == "Zn"]
+        if len(hydrogen_neighbors) == 2 and not carbon_neighbors and not zinc_neighbors:
+            water_indices.add(atom_index)
+            water_indices.update(hydrogen_neighbors)
+
+    # Organic: start from all C atoms, then include bonded H/O atoms that are not already classified.
+    carbon_seed_indices = {index for index, symbol in enumerate(symbols) if symbol == "C"}
+    pending = list(carbon_seed_indices)
+    organic_indices.update(carbon_seed_indices)
+    while pending:
+        atom_index = pending.pop()
+        for neighbor in adjacency[atom_index]:
+            if neighbor in surface_indices or neighbor in water_indices or neighbor in organic_indices:
+                continue
+            if symbols[neighbor] in {"C", "H", "O"}:
+                organic_indices.add(neighbor)
+                pending.append(neighbor)
+
+    for atom_index in sorted(surface_indices):
+        atom_groups[atom_index] = "surface"
+    for atom_index in sorted(water_indices - surface_indices):
+        atom_groups[atom_index] = "water"
+    for atom_index in sorted(organic_indices - surface_indices - water_indices):
+        atom_groups[atom_index] = "organic"
+
+    for atom_index, label in atom_groups.items():
+        grouped_indices[label].append(atom_index)
 
     for label in grouped_indices:
         grouped_indices[label].sort()
@@ -219,6 +260,53 @@ def determine_interface_type(group_i: str, group_j: str) -> str | None:
         return "water-surface"
     if labels == frozenset(("organic", "water")):
         return "organic-water"
+    return None
+
+
+def parse_target_filters(config: dict[str, Any]) -> dict[str, Any]:
+    filters_config = config.get("filters", {})
+    raw_rules = filters_config.get("rules", [])
+    parsed_rules: list[dict[str, Any]] = []
+
+    for raw_rule in raw_rules:
+        raw_pairs = raw_rule.get("group_symbol_pairs", [])
+        if len(raw_pairs) != 2:
+            continue
+        parsed_rules.append(
+            {
+                "name": str(raw_rule.get("name", "unnamed_rule")),
+                "interface_type": raw_rule.get("interface_type"),
+                "group_symbol_pairs": frozenset(
+                    (str(pair["group"]), str(pair["symbol"]))
+                    for pair in raw_pairs
+                    if "group" in pair and "symbol" in pair
+                ),
+            }
+        )
+
+    return {
+        "enabled": bool(filters_config.get("enabled", False)),
+        "output_csv": str(filters_config.get("targeted_events_csv", "bond_events_targeted.csv")),
+        "rules": [rule for rule in parsed_rules if len(rule["group_symbol_pairs"]) == 2],
+    }
+
+
+def match_target_rule(event: dict[str, Any], target_filters: dict[str, Any]) -> str | None:
+    if not target_filters["enabled"]:
+        return None
+
+    event_pairs = frozenset(
+        {
+            (str(event["group_i"]), str(event["symbol_i"])),
+            (str(event["group_j"]), str(event["symbol_j"])),
+        }
+    )
+
+    for rule in target_filters["rules"]:
+        if rule["interface_type"] and event["interface_type"] != rule["interface_type"]:
+            continue
+        if event_pairs == rule["group_symbol_pairs"]:
+            return str(rule["name"])
     return None
 
 
@@ -515,6 +603,7 @@ def main() -> None:
     parsed_selection = parse_selection(selection)
     save_changed_frames = bool(selection.get("save_changed_frames", False))
     progress_interval = max(1, int(selection.get("progress_interval", 100)))
+    target_filters = parse_target_filters(config)
     key_frames_dir = output_root / config["output"]["key_frames_dir"]
     if save_changed_frames:
         key_frames_dir.mkdir(exist_ok=True)
@@ -524,6 +613,7 @@ def main() -> None:
     co_events_csv = output_root / "bond_events_C-O.csv"
     interface_events_csv = output_root / "bond_events_interfaces.csv"
     interface_counts_csv = output_root / "bond_interface_counts.csv"
+    targeted_events_csv = output_root / target_filters["output_csv"]
     atom_groups_json = output_root / "atom_groups_first_frame.json"
     summary_json = output_root / config["output"]["summary_json"]
     frame_iter = iter_frames(input_path, input_format, selection)
@@ -534,8 +624,28 @@ def main() -> None:
         export_events([], events_csv)
         export_pair_events([], cc_events_csv, "C-C")
         export_pair_events([], co_events_csv, "C-O")
-        export_interface_events([], interface_events_csv)
+        initialize_interface_grouped_csv(interface_events_csv)[0].close()
         export_interface_counts([], interface_counts_csv)
+        initialize_event_detail_csv(
+            targeted_events_csv,
+            [
+                "frame_index",
+                "frame_label",
+                "previous_frame_label",
+                "rule_name",
+                "interface_type",
+                "event_type",
+                "atom_i",
+                "atom_j",
+                "group_i",
+                "group_j",
+                "symbol_i",
+                "symbol_j",
+                "pair",
+                "distance_broken",
+                "distance_formed",
+            ],
+        )[0].close()
         summary = {
             "module": "bond_change_detection",
             "status": "no_input",
@@ -604,6 +714,27 @@ def main() -> None:
             "organic-water",
         ],
     )
+    targeted_handle, targeted_writer = initialize_event_detail_csv(
+        targeted_events_csv,
+        [
+            "frame_index",
+            "frame_label",
+            "previous_frame_label",
+            "rule_name",
+            "interface_type",
+            "event_type",
+            "atom_i",
+            "atom_j",
+            "group_i",
+            "group_j",
+            "symbol_i",
+            "symbol_j",
+            "pair",
+            "distance_broken",
+            "distance_formed",
+        ],
+    )
+    targeted_event_count = 0
 
     if input_format == "cif_dir":
         total_frames = len(discover_frame_paths(input_path, input_format, selection))
@@ -711,6 +842,31 @@ def main() -> None:
                     frame_interface_counts[interface_type] += 1
                     interface_counts[interface_type] += 1
 
+                rule_name = match_target_rule(event, target_filters)
+                if rule_name:
+                    append_detail_event_row(
+                        targeted_writer,
+                        targeted_handle,
+                        {
+                            "frame_index": event["frame_index"],
+                            "frame_label": event["frame_label"],
+                            "previous_frame_label": event["previous_frame_label"],
+                            "rule_name": rule_name,
+                            "interface_type": event["interface_type"],
+                            "event_type": event["event_type"],
+                            "atom_i": event["atom_i"],
+                            "atom_j": event["atom_j"],
+                            "group_i": event["group_i"],
+                            "group_j": event["group_j"],
+                            "symbol_i": event["symbol_i"],
+                            "symbol_j": event["symbol_j"],
+                            "pair": event["pair"],
+                            "distance_broken": event["distance_previous"],
+                            "distance_formed": event["distance_current"],
+                        },
+                    )
+                    targeted_event_count += 1
+
             append_grouped_interface_row(
                 interface_writer,
                 interface_handle,
@@ -745,13 +901,34 @@ def main() -> None:
         co_handle.close()
         interface_handle.close()
         interface_counts_handle.close()
+        targeted_handle.close()
 
     if frames_loaded < 2:
         export_events([], events_csv)
         export_pair_events([], cc_events_csv, "C-C")
         export_pair_events([], co_events_csv, "C-O")
-        export_interface_events([], interface_events_csv)
+        initialize_interface_grouped_csv(interface_events_csv)[0].close()
         export_interface_counts([], interface_counts_csv)
+        initialize_event_detail_csv(
+            targeted_events_csv,
+            [
+                "frame_index",
+                "frame_label",
+                "previous_frame_label",
+                "rule_name",
+                "interface_type",
+                "event_type",
+                "atom_i",
+                "atom_j",
+                "group_i",
+                "group_j",
+                "symbol_i",
+                "symbol_j",
+                "pair",
+                "distance_broken",
+                "distance_formed",
+            ],
+        )[0].close()
         summary = {
             "module": "bond_change_detection",
             "status": "insufficient_frames",
@@ -793,6 +970,19 @@ def main() -> None:
                 interface_type: {"events": count}
                 for interface_type, count in interface_counts.items()
             },
+        },
+        "targeted_event_filter": {
+            "enabled": target_filters["enabled"],
+            "path": str(targeted_events_csv),
+            "events": targeted_event_count,
+            "rules": [
+                {
+                    "name": rule["name"],
+                    "interface_type": rule["interface_type"],
+                    "group_symbol_pairs": sorted(rule["group_symbol_pairs"]),
+                }
+                for rule in target_filters["rules"]
+            ],
         },
         "progress_interval": progress_interval,
         "frame_selection": parsed_selection,
