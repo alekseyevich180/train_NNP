@@ -1,10 +1,10 @@
-#!/bin/bash
+#!/bin/sh
 #SBATCH -J test
-#SBATCH -p i8cpu
-#SBATCH -N 1
-#SBATCH -n 1
+#SBATCH -p L4cpu
+#SBATCH -N 2
+#SBATCH -n 256
 #SBATCH -c 1
-#SBATCH -t 0:30:00
+#SBATCH -t 120:00:00
 #SBATCH --exclusive
 
 set -euo pipefail
@@ -22,17 +22,17 @@ conda activate /home/k0710/k071001/UMA/uma_clean
 # 👉 如果你有 API key（用 UMA 才需要）
 # export PFP_API_KEY=xxxx
 
-cd /home/k0710/k071001/UMA/lin_test
+cd /home/k0710/k071001/UMA/lin_ru
 
 ###########################################
 SURFACE=surface.vasp
 MOLECULES="G.vasp H.vasp S.vasp"
-N_TRIALS=300
+N_TRIALS=500
 FMAX=1e-4
 UMA_MODEL=uma-s-1p2
 CHECKPOINT=/home/k0710/k071001/UMA/checkpoints/uma-s-1p2.pt
 DEVICE=cpu
-ACTIVE_SYMBOLS="Co"
+ACTIVE_SYMBOLS="Ru"
 SITE_RADIUS=2.0
 DETACH_CUTOFF=4.0
 PENALTY_ENERGY=1000000.0

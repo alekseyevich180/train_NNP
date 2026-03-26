@@ -3,9 +3,9 @@
   "status": "completed",
   "input_path": "C:\\Users\\yingkaiwu\\Desktop\\Active-learning\\NNP\\aimd_data\\ketone_dataset\\cif_frames",
   "input_format": "cif_dir",
-  "frames_loaded": 1000,
-  "events_detected": 33794,
-  "frames_with_changes": 998,
+  "frames_loaded": 5018,
+  "events_detected": 456680,
+  "frames_with_changes": 5016,
   "pair_cutoffs": {
     "C-C": 1.85,
     "C-O": 1.65,
@@ -18,7 +18,7 @@
   "exported_pair_event_files": {
     "C-C": {
       "path": "C:\\Users\\yingkaiwu\\Desktop\\Active-learning\\NNP\\scripts\\bond_change_detection\\outputs\\bond_events_C-C.csv",
-      "events": 0
+      "events": 2
     },
     "C-O": {
       "path": "C:\\Users\\yingkaiwu\\Desktop\\Active-learning\\NNP\\scripts\\bond_change_detection\\outputs\\bond_events_C-O.csv",
@@ -37,26 +37,47 @@
   "exported_interface_event_files": {
     "all_interfaces": {
       "path": "C:\\Users\\yingkaiwu\\Desktop\\Active-learning\\NNP\\scripts\\bond_change_detection\\outputs\\bond_events_interfaces.csv",
-      "events": 3056
+      "events": 27653
     },
     "interface_counts": {
       "path": "C:\\Users\\yingkaiwu\\Desktop\\Active-learning\\NNP\\scripts\\bond_change_detection\\outputs\\bond_interface_counts.csv"
     },
     "organic-surface": {
-      "events": 173
+      "events": 1093
     },
     "water-surface": {
-      "events": 2883
+      "events": 26560
     },
     "organic-water": {
       "events": 0
     }
+  },
+  "targeted_event_filter": {
+    "enabled": true,
+    "path": "C:\\Users\\yingkaiwu\\Desktop\\Active-learning\\NNP\\scripts\\bond_change_detection\\outputs\\bond_events_targeted.csv",
+    "events": 1,
+    "rules": [
+      {
+        "name": "organic_H_to_surface_O",
+        "interface_type": "organic-surface",
+        "group_symbol_pairs": [
+          [
+            "organic",
+            "H"
+          ],
+          [
+            "surface",
+            "O"
+          ]
+        ]
+      }
+    ]
   },
   "progress_interval": 10,
   "frame_selection": {
     "start_frame": 0,
     "end_frame": null,
     "frame_stride": 1,
-    "max_frames": 1000
+    "max_frames": null
   }
 }
