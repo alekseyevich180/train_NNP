@@ -40,15 +40,16 @@ CONFIG = {
     "temperature_scan": {
         "start": 280,
         "stop": 1080,
-        "step": 50,
+        "step": 100,
         "replicas": 1,
     },
     "md_control": {
-        "equil_steps": 10000,
-        "prod_steps": 20000,
+        "equil_steps": 3000,
+        "prod_steps": 6000,
         "timestep": 0.5,
         "tau_t": 100.0,
-        "sample_interval": 1000,
+        "sample_interval": 200,
+        "quench_interval": 5,
     },
     "adsorption": {
         "enabled": True,
@@ -243,6 +244,7 @@ def run_single_temperature(base_atoms, temperature, replica_id, output_root):
 
     sample_interval = CONFIG["md_control"]["sample_interval"]
     prod_steps = CONFIG["md_control"]["prod_steps"]
+    quench_interval = CONFIG["md_control"]["quench_interval"]
     frame_rows = []
     basin_centers = []
     sample_counter = {"count": 0}
@@ -265,11 +267,18 @@ def run_single_temperature(base_atoms, temperature, replica_id, output_root):
         md_file = os.path.join(md_dir, f"{label}_md.cif")
         write(md_file, md_atoms)
 
-        relaxed_energy, relaxed_file = quench_snapshot(md_atoms, fixed_indices, relaxed_dir, label)
-        relaxed_atoms = read(relaxed_file)
-        relaxed_atoms.calc = build_calculator()
-        relaxed_ads = is_adsorbed(relaxed_atoms)
-        basin_id = assign_basin_id(relaxed_energy, basin_centers)
+        relaxed_energy = None
+        relaxed_file = ""
+        relaxed_ads = None
+        basin_id = None
+        if sample_id % quench_interval == 0:
+            relaxed_energy, relaxed_file = quench_snapshot(
+                md_atoms, fixed_indices, relaxed_dir, label
+            )
+            relaxed_atoms = read(relaxed_file)
+            relaxed_atoms.calc = build_calculator()
+            relaxed_ads = is_adsorbed(relaxed_atoms)
+            basin_id = assign_basin_id(relaxed_energy, basin_centers)
 
         frame_rows.append(
             {
@@ -279,16 +288,21 @@ def run_single_temperature(base_atoms, temperature, replica_id, output_root):
                 "md_energy_eV": md_energy,
                 "relaxed_energy_eV": relaxed_energy,
                 "adsorbed_md": int(md_ads),
-                "adsorbed_relaxed": int(relaxed_ads),
+                "adsorbed_relaxed": (
+                    int(relaxed_ads) if relaxed_ads is not None else None
+                ),
                 "basin_id": basin_id,
                 "md_frame": md_file,
                 "relaxed_frame": relaxed_file,
             }
         )
-        print(
-            f"Sampled {label}: md_energy={md_energy:.6f} eV, "
-            f"relaxed_energy={relaxed_energy:.6f} eV, basin={basin_id}"
-        )
+        if relaxed_energy is None:
+            print(f"Sampled {label}: md_energy={md_energy:.6f} eV, quench=skipped")
+        else:
+            print(
+                f"Sampled {label}: md_energy={md_energy:.6f} eV, "
+                f"relaxed_energy={relaxed_energy:.6f} eV, basin={basin_id}"
+            )
 
     dyn.attach(sample_frame, interval=1)
 
@@ -305,23 +319,41 @@ def summarize_temperature(rows):
     if not rows:
         return None
 
-    relaxed_energies = np.array([row["relaxed_energy_eV"] for row in rows], dtype=float)
     md_energies = np.array([row["md_energy_eV"] for row in rows], dtype=float)
-    basin_counter = Counter(row["basin_id"] for row in rows)
-    dominant_basin_id, dominant_count = basin_counter.most_common(1)[0]
+    quenched_rows = [row for row in rows if row["relaxed_energy_eV"] is not None]
+
+    avg_relaxed_energy = None
+    lowest_relaxed_energy = None
+    adsorbed_relaxed_fraction = None
+    dominant_basin_id = None
+    dominant_basin_fraction = None
+
+    if quenched_rows:
+        relaxed_energies = np.array(
+            [row["relaxed_energy_eV"] for row in quenched_rows], dtype=float
+        )
+        basin_counter = Counter(row["basin_id"] for row in quenched_rows)
+        dominant_basin_id, dominant_count = basin_counter.most_common(1)[0]
+        avg_relaxed_energy = float(relaxed_energies.mean())
+        lowest_relaxed_energy = float(relaxed_energies.min())
+        adsorbed_relaxed_fraction = float(
+            np.mean([row["adsorbed_relaxed"] for row in quenched_rows])
+        )
+        dominant_basin_fraction = dominant_count / len(quenched_rows)
 
     return {
         "temperature_K": rows[0]["temperature_K"],
         "num_samples": len(rows),
+        "num_quenched_samples": len(quenched_rows),
         "num_replicas": len(set(row["replica"] for row in rows)),
         "avg_md_energy_eV": float(md_energies.mean()),
         "min_md_energy_eV": float(md_energies.min()),
-        "avg_relaxed_energy_eV": float(relaxed_energies.mean()),
-        "lowest_relaxed_energy_eV": float(relaxed_energies.min()),
+        "avg_relaxed_energy_eV": avg_relaxed_energy,
+        "lowest_relaxed_energy_eV": lowest_relaxed_energy,
         "adsorbed_md_fraction": float(np.mean([row["adsorbed_md"] for row in rows])),
-        "adsorbed_relaxed_fraction": float(np.mean([row["adsorbed_relaxed"] for row in rows])),
+        "adsorbed_relaxed_fraction": adsorbed_relaxed_fraction,
         "dominant_basin_id": dominant_basin_id,
-        "dominant_basin_fraction": dominant_count / len(rows),
+        "dominant_basin_fraction": dominant_basin_fraction,
     }
 
 
@@ -329,6 +361,7 @@ def write_overall_summary(path, rows):
     fieldnames = [
         "temperature_K",
         "num_samples",
+        "num_quenched_samples",
         "num_replicas",
         "avg_md_energy_eV",
         "min_md_energy_eV",
