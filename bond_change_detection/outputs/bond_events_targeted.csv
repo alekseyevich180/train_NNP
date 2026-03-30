@@ -1,2 +1,4 @@
 frame_index,frame_label,previous_frame_label,rule_name,interface_type,event_type,atom_i,atom_j,group_i,group_j,symbol_i,symbol_j,pair,distance_broken,distance_formed
 1151,set_000__step_00057600,set_000__step_00057550,organic_H_to_surface_O,organic-surface,formed,159,986,surface,organic,O,H,H-O,,1.085371
+2815,set_001__step_00140800,set_001__step_00140750,organic_H_to_surface_O,organic-surface,broken,159,986,surface,organic,O,H,H-O,1.067164,
+2816,set_001__step_00140850,set_001__step_00140800,organic_H_to_surface_O,organic-surface,formed,159,986,surface,organic,O,H,H-O,,1.066575
