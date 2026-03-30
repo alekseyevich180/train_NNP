@@ -1,1 +1,4 @@
 frame_index,frame_label,previous_frame_label,event_type,atom_i,atom_j,symbol_i,symbol_j,pair,distance_broken,distance_formed
+272,set_000__step_00013650,set_000__step_00013600,formed,139,961,O,C,C-O,,1.627697
+273,set_000__step_00013700,set_000__step_00013650,broken,139,961,O,C,C-O,1.627697,
+275,set_000__step_00013800,set_000__step_00013750,formed,139,961,O,C,C-O,,1.509772

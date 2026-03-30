@@ -1,0 +1,38 @@
+input:
+  trajectory: "../../aimd_data/ketone_dataset/cif_frames" 
+  format: "cif_dir"
+
+chemistry:
+  cutoffs:
+    C-C: 1.85
+    C-O: 1.65
+    C-H: 1.35
+    O-H: 1.25
+    Zn-O: 2.20
+    Zn-C: 2.30
+
+output:
+  root: "outputs"
+  events_csv: "bond_events.csv"
+  summary_json: "summary.json"
+  key_frames_dir: "key_frames"
+
+selection:
+  save_changed_frames: false
+  progress_interval: 10
+  start_frame: 0
+  end_frame:
+  frame_stride: 1
+  max_frames: 
+
+filters:
+  enabled: true
+  targeted_events_csv: "bond_events_targeted.csv"
+  rules:
+    - name: "organic_H_to_surface_O"
+      interface_type: "organic-surface"
+      group_symbol_pairs:
+        - group: "organic"
+          symbol: "H"
+        - group: "surface"
+          symbol: "O"
