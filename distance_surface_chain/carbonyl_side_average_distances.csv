@@ -1,0 +1,5 @@
+structure,surface_top_z_A,carbonyl_oxygen_label,carbonyl_carbon_label,carbonyl_position_in_chain,alpha_carbon_1_label,alpha_carbon_2_label,alpha_carbon_mean_height_A,alpha_carbon_mean_nearest_surface_distance_A
+2-ketone,8.738314,O145,C1,2,C2,C3,3.090546,3.599623
+3-ketone,8.972607,O145,C3,3,C2,C4,3.15799,3.66622
+4-ketone,8.78494,O145,C4,4,C3,C5,3.195396,3.684903
+5-ketone,8.69335,O145,C5,5,C4,C6,3.217797,3.744742
