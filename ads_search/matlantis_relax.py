@@ -17,6 +17,10 @@ CONFIG = {
         "log_file": "relax.log",
         "pbc": True,
     },
+    "calculator": {
+        "calc_mode": EstimatorCalcMode.CRYSTAL_U0,
+        "model_version": "v3.0.0",
+    },
     "relaxation": {
         "fmax": 0.05,
         "steps": 500,
@@ -29,7 +33,10 @@ CONFIG = {
 
 
 def build_calculator() -> ASECalculator:
-    estimator = Estimator(calc_mode=EstimatorCalcMode.PBE_U_PLUS_D3)
+    estimator = Estimator(
+        calc_mode=CONFIG["calculator"]["calc_mode"],
+        model_version=CONFIG["calculator"]["model_version"],
+    )
     return ASECalculator(estimator)
 
 
@@ -103,6 +110,9 @@ def main() -> None:
     atoms = read(args.input)
     atoms.calc = build_calculator()
     atoms.pbc = CONFIG["system"]["pbc"]
+
+    print(f"Matlantis calc_mode: {CONFIG['calculator']['calc_mode']}")
+    print(f"Matlantis model_version: {CONFIG['calculator']['model_version']}")
 
     fixed_indices = get_fixed_indices(atoms, args.fix_below_z, args.fix_symbols)
     if fixed_indices:
