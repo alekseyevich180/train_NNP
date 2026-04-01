@@ -142,6 +142,7 @@ class WorkflowConfig:
     calc_mode: str = "CRYSTAL"
     compute_adsorption_energy: bool = False
     only_relax_states: bool = False
+    run_neb: bool = True
     adsorption_pairs: list[AdsorptionPairConfig] = field(default_factory=list)
     structure: StructureConfig = field(default_factory=StructureConfig)
     relax: RelaxConfig = field(default_factory=RelaxConfig)
@@ -169,6 +170,7 @@ class WorkflowConfig:
 CONFIG = WorkflowConfig(
     compute_adsorption_energy=True,
     only_relax_states=False,
+    run_neb=True,
     adsorption_pairs=[
         AdsorptionPairConfig(
             name="step0",
@@ -731,6 +733,7 @@ def run_aimd_presampling(atoms: Atoms, config: WorkflowConfig, state_label: str)
     )
 
     sampled_frames: list[Atoms] = []
+    sampled_rows: list[dict[str, object]] = []
     step_counter = {"step": 0}
     sampled_dir = Path(f"{config.structure.neb_workdir}_aimd_samples") / state_label
     os.makedirs(sampled_dir, exist_ok=True)
@@ -741,12 +744,23 @@ def run_aimd_presampling(atoms: Atoms, config: WorkflowConfig, state_label: str)
             return
         frame = atoms.copy()
         frame.calc = calculator
+        energy = frame.get_potential_energy()
         sampled_frames.append(frame)
-        write(str(sampled_dir / f"step_{step_counter['step']:06d}.cif"), frame)
+        filename = f"step_{step_counter['step']:06d}.cif"
+        write(str(sampled_dir / filename), frame)
+        sampled_rows.append(
+            {
+                "step": step_counter["step"],
+                "energy_eV": energy,
+                "file": filename,
+            }
+        )
 
     dyn.attach(sample_frame, interval=1)
     print(f"Running AIMD presampling for {state_label} at {config.aimd.temperature_K} K")
     dyn.run(config.aimd.steps)
+    if sampled_rows:
+        pd.DataFrame(sampled_rows).to_csv(sampled_dir / "energies.csv", index=False)
     return sampled_frames
 
 
@@ -768,6 +782,7 @@ def select_lowest_energy_sample(sampled_frames: Sequence[Atoms], config: Workflo
 
     best_atoms: Optional[Atoms] = None
     best_energy: Optional[float] = None
+    optimized_rows: list[dict[str, object]] = []
     optimized_dir = Path(f"{config.structure.neb_workdir}_optimized_samples") / state_label
     os.makedirs(optimized_dir, exist_ok=True)
 
@@ -778,12 +793,24 @@ def select_lowest_energy_sample(sampled_frames: Sequence[Atoms], config: Workflo
         if config.aimd.relax_sampled_frames:
             BFGS(candidate, logfile=None).run(fmax=config.aimd.sampled_frame_fmax)
         energy = candidate.get_potential_energy()
-        write(str(optimized_dir / f"sample_{idx:04d}.cif"), candidate)
+        filename = f"sample_{idx:04d}.cif"
+        write(str(optimized_dir / filename), candidate)
+        source_step = (idx + 1) * config.aimd.sample_interval
+        optimized_rows.append(
+            {
+                "sample_index": idx,
+                "source_step": source_step,
+                "energy_eV": energy,
+                "file": filename,
+            }
+        )
         if best_energy is None or energy < best_energy:
             best_energy = energy
             best_atoms = candidate.copy()
 
     assert best_atoms is not None
+    if optimized_rows:
+        pd.DataFrame(optimized_rows).to_csv(optimized_dir / "energies.csv", index=False)
     print(f"Selected lowest-energy sampled structure for {state_label}: {best_energy} eV")
     return best_atoms
 
@@ -1035,6 +1062,7 @@ def build_runtime_config_from_relaxed_states(
         calc_mode=config.calc_mode,
         compute_adsorption_energy=config.compute_adsorption_energy,
         only_relax_states=config.only_relax_states,
+        run_neb=config.run_neb,
         adsorption_pairs=config.adsorption_pairs,
         structure=StructureConfig(
             input_dir=Path("."),
@@ -1074,6 +1102,10 @@ def run_neb_block(
     config: WorkflowConfig = CONFIG,
     relaxed_states: Optional[Sequence[tuple[Path, Atoms]]] = None,
 ) -> None:
+    if not config.run_neb:
+        print("run_neb=False, skipping NEB block.")
+        return
+
     if relaxed_states is None:
         relaxed_states, _ = prepare_screened_states(config)
 
