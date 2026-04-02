@@ -29,7 +29,7 @@ from ase.constraints import ExpCellFilter, FixAtoms, FixBondLengths
 from ase.io import Trajectory, read, write
 from ase.md.nvtberendsen import NVTBerendsen
 from ase.md.velocitydistribution import MaxwellBoltzmannDistribution
-from ase.neb import NEB
+from ase.mep import NEB
 from ase.optimize import BFGS, FIRE, LBFGS
 from ase.optimize.basin import BasinHopping
 from ase.optimize.minimahopping import MinimaHopping
@@ -545,6 +545,35 @@ def load_structure(path: Path | str) -> Atoms:
     return atoms
 
 
+def reorder_atoms_like_reference(reference: Atoms, target: Atoms) -> Atoms:
+    """Reorder target atoms to match reference ordering for NEB."""
+    ref_numbers = reference.get_atomic_numbers()
+    tgt_numbers = target.get_atomic_numbers()
+    if len(ref_numbers) != len(tgt_numbers):
+        raise ValueError("Reference and target have different atom counts.")
+    if sorted(ref_numbers.tolist()) != sorted(tgt_numbers.tolist()):
+        raise ValueError("Reference and target do not have the same composition.")
+
+    ref_positions = reference.get_positions()
+    tgt_positions = target.get_positions()
+    remaining = list(range(len(target)))
+    new_order: list[int] = []
+
+    for i, atomic_number in enumerate(ref_numbers):
+        candidates = [idx for idx in remaining if tgt_numbers[idx] == atomic_number]
+        if not candidates:
+            raise ValueError(f"Could not find matching atom for atomic number {atomic_number}.")
+        distances = [np.linalg.norm(tgt_positions[idx] - ref_positions[i]) for idx in candidates]
+        best_idx = candidates[int(np.argmin(distances))]
+        new_order.append(best_idx)
+        remaining.remove(best_idx)
+
+    reordered = target[new_order]
+    reordered.set_cell(target.cell)
+    reordered.set_pbc(target.pbc)
+    return reordered
+
+
 def relax_structure(
     atoms: Atoms,
     config: WorkflowConfig,
@@ -589,6 +618,7 @@ def load_slab_from_file(
 
 
 def load_molecule_from_file(config: WorkflowConfig, path: Optional[Path | str] = None) -> tuple[Atoms, float]:
+    os.makedirs(config.structure.output_dir, exist_ok=True)
     molec = load_structure(path or config.molecule_path)
     if config.relax.relax_molecule:
         relax_structure(
@@ -680,7 +710,7 @@ def prepare_is_fs_from_files(
     workdir: Optional[str] = None,
 ) -> tuple[str, Atoms, Atoms]:
     is_atoms = load_structure(is_file or config.is_path)
-    fs_atoms = load_structure(fs_file or config.fs_path)
+    fs_atoms = reorder_atoms_like_reference(is_atoms, load_structure(fs_file or config.fs_path))
 
     if config.relax.relax_is_fs:
         relax_structure(is_atoms, config, fmax=config.relax.is_fmax, fix_bottom=True)
