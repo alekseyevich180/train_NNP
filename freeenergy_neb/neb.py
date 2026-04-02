@@ -298,6 +298,37 @@ def analyze_neb(filepath: str, config: WorkflowConfig, ts_index: int) -> tuple[l
 
     energies = [image.get_total_energy() for image in configs]
     mforces = [calc_max_force(image) for image in configs]
+    profile = pd.DataFrame(
+        {
+            "image_index": list(range(len(configs))),
+            "energy_eV": energies,
+            "max_force_eVA": mforces,
+        }
+    )
+    profile.to_csv(f"{filepath}/neb_profile.csv", index=False)
+
+    plt.figure()
+    plt.plot(range(len(energies)), energies, marker="o")
+    plt.xlabel("replica")
+    plt.ylabel("energy [eV]")
+    plt.xticks(np.arange(0, len(energies), 2))
+    plt.grid(True)
+    plt.tight_layout()
+    plt.savefig(f"{filepath}/neb_energy_profile.png", dpi=200)
+    plt.show()
+    plt.close()
+
+    plt.figure()
+    plt.plot(range(len(mforces)), mforces, marker="o")
+    plt.xlabel("replica")
+    plt.ylabel("max force [eV/A]")
+    plt.xticks(np.arange(0, len(mforces), 2))
+    plt.grid(True)
+    plt.tight_layout()
+    plt.savefig(f"{filepath}/neb_force_profile.png", dpi=200)
+    plt.show()
+    plt.close()
+
     print(f"actE {energies[ts_index] - energies[0]} eV, deltaE {energies[ts_index] - energies[-1]} eV")
     return configs, energies, mforces
 
@@ -324,16 +355,24 @@ def run_vibrational_analysis(
     vib = Vibrations(ts, name=vibpath, indices=vibatoms)
     vib.run()
     vib_energies = vib.get_energies()
-    thermo = IdealGasThermo(
-        vib_energies=vib_energies,
-        potentialenergy=ts.get_potential_energy(),
-        atoms=ts,
-        geometry=config.vib.geometry,
-        symmetrynumber=config.vib.symmetrynumber,
-        spin=config.vib.spin,
-        natoms=len(vibatoms),
-    )
-    thermo.get_gibbs_energy(temperature=config.vib.temperature, pressure=config.vib.pressure)
+    n_imag = int(np.sum(np.iscomplex(vib_energies)))
+    if n_imag:
+        print(f"Found {n_imag} imaginary vibrational mode(s); skipping Gibbs free-energy evaluation for TS.")
+    else:
+        thermo = IdealGasThermo(
+            vib_energies=vib_energies,
+            potentialenergy=ts.get_potential_energy(),
+            atoms=ts,
+            geometry=config.vib.geometry,
+            symmetrynumber=config.vib.symmetrynumber,
+            spin=config.vib.spin,
+            natoms=len(vibatoms),
+        )
+        gibbs = thermo.get_gibbs_energy(
+            temperature=config.vib.temperature,
+            pressure=config.vib.pressure,
+        )
+        print(f"TS Gibbs energy: {gibbs} eV")
     vib.summary(log=f"{filepath}/vib_summary.txt")
     vib.write_mode(n=config.vib.mode_index, kT=config.vib.mode_kT, nimages=config.vib.mode_images)
     vib.clean()
@@ -389,6 +428,7 @@ def run_single_segment(filepath: str, config: WorkflowConfig, segment_index: int
     ts_index = get_segment_ts_index(config, segment_index)
     run_neb(filepath, config)
     configs, _, _ = analyze_neb(filepath, config, ts_index)
+    render_neb_images(filepath)
     ts, z_pos = optimize_ts(filepath, configs, config, ts_index)
     vib_traj = run_vibrational_analysis(filepath, ts, z_pos, config)
     irc_is, irc_fs = pseudo_irc(ts, vib_traj, config)
