@@ -31,10 +31,6 @@ CONFIG = {
         "max_steps": 200,
     },
     "adsorption": {
-        "active_symbols": ["Co"],
-        "site_radius": 2.0,
-        "detach_cutoff": 4.0,
-        "penalty_energy": 1e6,
         "z_height_range": [2.0, 6.0],
     },
 }
@@ -105,47 +101,12 @@ def load_molecule(
     return mol, energy
 
 
-def get_active_indices(
-    atoms: Atoms, active_symbols: list[str], structure_path: Path | None = None
-) -> list[int]:
-    active_symbol_set = set(normalize_symbols(active_symbols))
-    indices = [idx for idx, atom in enumerate(atoms) if atom.symbol in active_symbol_set]
-    if not indices:
-        available_symbols = sorted(set(atoms.get_chemical_symbols()))
-        hint = ""
-        if structure_path is not None and structure_path.suffix.lower() in {".vasp", ".poscar", ".contcar"}:
-            hint = (
-                " Hint: VASP/POSCAR files do not store element labels per atom. "
-                "If you replaced Ni with Ru, you must also update the species/count header "
-                "and regroup atoms by element so ASE reads Ru from the file."
-            )
-        raise ValueError(
-            "No active-site atoms found for symbols: "
-            f"{', '.join(active_symbol_set)}. "
-            f"Available symbols in slab: {', '.join(available_symbols)}. "
-            f"Symbol counts: {format_symbol_counts(atoms)}."
-            f"{hint}"
-        )
-    return indices
-
-
-def get_min_active_distance(combined: Atoms, n_slab_atoms: int, active_indices: list[int]) -> float:
-    active_positions = combined.positions[active_indices]
-    molecule_positions = combined.positions[n_slab_atoms:]
-    deltas = active_positions[:, None, :] - molecule_positions[None, :, :]
-    return float(np.linalg.norm(deltas, axis=2).min())
-
-
 def objective(trial: optuna.Trial) -> float:
     slab = json_to_atoms(trial.study.user_attrs["slab"])
     e_slab = trial.study.user_attrs["E_slab"]
     mol = json_to_atoms(trial.study.user_attrs["mol"])
     e_mol = trial.study.user_attrs["E_mol"]
     output_dir = Path(trial.study.user_attrs["output_dir"])
-    active_indices = trial.study.user_attrs["active_indices"]
-    site_radius = float(trial.study.user_attrs["site_radius"])
-    detach_cutoff = float(trial.study.user_attrs["detach_cutoff"])
-    penalty_energy = float(trial.study.user_attrs["penalty_energy"])
     max_steps = trial.study.user_attrs["max_steps"]
     z_min = float(trial.study.user_attrs["z_height_min"])
     z_max = float(trial.study.user_attrs["z_height_max"])
@@ -153,19 +114,18 @@ def objective(trial: optuna.Trial) -> float:
     phi = 180.0 * trial.suggest_float("phi", -1.0, 1.0)
     theta = np.degrees(np.arccos(trial.suggest_float("theta", -1.0, 1.0)))
     psi = 180.0 * trial.suggest_float("psi", -1.0, 1.0)
-    site_choice = trial.suggest_int("site_index", 0, len(active_indices) - 1)
-    dx = trial.suggest_float("dx", -site_radius, site_radius)
-    dy = trial.suggest_float("dy", -site_radius, site_radius)
+    x_frac = trial.suggest_float("x_frac", 0.0, 1.0)
+    y_frac = trial.suggest_float("y_frac", 0.0, 1.0)
     z_hig = trial.suggest_float("z_hig", z_min, z_max)
 
     mol.euler_rotate(phi=phi, theta=theta, psi=psi)
 
-    active_index = active_indices[site_choice]
-    active_position = slab.positions[active_index]
-    mol.translate([active_position[0] + dx, active_position[1] + dy, 0.0])
+    xy_position = np.matmul([x_frac, y_frac, 0.0], slab.cell)[:2]
+    mol.translate([xy_position[0], xy_position[1], 0.0])
 
+    max_slab_z = np.max(slab.positions[:, 2])
     min_mol_z = np.min(mol.positions[:, 2])
-    mol.translate([0.0, 0.0, active_position[2] + z_hig - min_mol_z])
+    mol.translate([0.0, 0.0, max_slab_z + z_hig - min_mol_z])
 
     combined = slab + mol
     e_total = get_opt_energy(combined, CALCULATOR, fmax=1e-3, max_steps=max_steps)
@@ -173,13 +133,6 @@ def objective(trial: optuna.Trial) -> float:
     structure_json = atoms_to_json(combined)
     write(output_dir / f"{trial.number}.cif", combined)
     trial.set_user_attr("structure", structure_json)
-
-    min_active_distance = get_min_active_distance(combined, len(slab), active_indices)
-    trial.set_user_attr("min_active_distance", min_active_distance)
-    if min_active_distance > detach_cutoff:
-        trial.set_user_attr("detached", True)
-        return penalty_energy + min_active_distance
-    trial.set_user_attr("detached", False)
 
     block_best_value = trial.study.user_attrs.get("block_best_value")
     if block_best_value is None or adsorption_energy < block_best_value:
@@ -238,10 +191,6 @@ def main() -> None:
     n_trials = int(CONFIG["optimization"]["n_trials"])
     fmax = float(CONFIG["optimization"]["fmax"])
     max_steps = int(CONFIG["optimization"]["max_steps"])
-    active_symbols = normalize_symbols(CONFIG["adsorption"]["active_symbols"])
-    site_radius = float(CONFIG["adsorption"]["site_radius"])
-    detach_cutoff = float(CONFIG["adsorption"]["detach_cutoff"])
-    penalty_energy = float(CONFIG["adsorption"]["penalty_energy"])
     z_height_min, z_height_max = CONFIG["adsorption"]["z_height_range"]
 
     CALCULATOR = build_calculator(calc_mode, model_version)
@@ -255,10 +204,9 @@ def main() -> None:
         output_dir.mkdir(parents=True, exist_ok=True)
         print(f"Matlantis calc_mode: {calc_mode}")
         print(f"Matlantis model_version: {model_version}")
-        print(f"Requested active symbols: {', '.join(active_symbols)}")
         print(f"Slab symbols: {format_symbol_counts(slab)}")
         print(f"Optimization step limit per structure: {max_steps}")
-        active_indices = get_active_indices(slab, active_symbols, surface)
+        print("Sampling mode: molecule is translated over the full surface cell using x_frac/y_frac in [0, 1].")
 
         study = optuna.create_study(direction="minimize")
         study.set_user_attr("slab", atoms_to_json(slab))
@@ -266,10 +214,6 @@ def main() -> None:
         study.set_user_attr("mol", atoms_to_json(mol))
         study.set_user_attr("E_mol", e_mol)
         study.set_user_attr("output_dir", str(output_dir))
-        study.set_user_attr("active_indices", active_indices)
-        study.set_user_attr("site_radius", site_radius)
-        study.set_user_attr("detach_cutoff", detach_cutoff)
-        study.set_user_attr("penalty_energy", penalty_energy)
         study.set_user_attr("max_steps", max_steps)
         study.set_user_attr("z_height_min", float(z_height_min))
         study.set_user_attr("z_height_max", float(z_height_max))
