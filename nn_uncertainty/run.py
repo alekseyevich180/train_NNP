@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import csv
 import json
+import math
 import random
+import re
 import shutil
 from dataclasses import dataclass
 from pathlib import Path
@@ -24,6 +26,9 @@ except ImportError:
     nn = None
     DataLoader = None
     TensorDataset = None
+
+
+EVENT_TOKEN_PATTERN = re.compile(r"\((formed|broken),[^)]*?,([A-Za-z]+-[A-Za-z]+),[^)]*\)")
 
 
 @dataclass(frozen=True)
@@ -67,75 +72,240 @@ def ensure_output_dirs(root: Path, config: dict[str, Any]) -> tuple[Path, Path]:
     return output_root, selected_dir
 
 
-def build_summary_path(output_root: Path, config: dict[str, Any]) -> Path:
-    return output_root / config["output"]["summary_json"]
-
-
 def write_summary(path: Path, summary: dict[str, Any]) -> None:
     path.write_text(json.dumps(summary, indent=2), encoding="utf-8")
 
 
-def load_frame_index(index_path: Path, raw_frames_dir: Path) -> list[FrameRecord]:
+def parse_float(value: str | None, default: float = 0.0) -> float:
+    if value in (None, ""):
+        return default
+    return float(value)
+
+
+def parse_int(value: str | None, default: int = 0) -> int:
+    if value in (None, ""):
+        return default
+    return int(float(value))
+
+
+def load_vdw_records(vdw_csv_path: Path) -> tuple[list[FrameRecord], dict[str, dict[str, float]], list[str]]:
     records: list[FrameRecord] = []
-    with index_path.open("r", newline="", encoding="utf-8") as handle:
+    feature_rows: dict[str, dict[str, float]] = {}
+    with vdw_csv_path.open("r", newline="", encoding="utf-8") as handle:
         reader = csv.DictReader(handle)
-        for idx, row in enumerate(reader):
-            frame_label = (
-                row.get("frame_label")
-                or row.get("label")
-                or row.get("frame")
-                or row.get("frame_name")
-                or f"frame_{idx:08d}"
-            )
-            frame_index_raw = row.get("frame_index") or row.get("index")
-            frame_index = int(frame_index_raw) if frame_index_raw not in (None, "") else idx
-            structure_path = row.get("structure_path") or row.get("path") or ""
-            if not structure_path:
-                structure_path = str((raw_frames_dir / f"{frame_label}.cif").resolve())
+        if reader.fieldnames is None:
+            raise SystemExit("vdw_scores.csv is missing a header row.")
+        feature_columns = [
+            name
+            for name in reader.fieldnames
+            if name not in {"frame_index", "frame_label", "structure_path"}
+        ]
+        for row in reader:
+            frame_label = row["frame_label"]
             records.append(
                 FrameRecord(
                     frame_label=frame_label,
-                    frame_index=frame_index,
-                    structure_path=structure_path,
+                    frame_index=parse_int(row.get("frame_index"), len(records)),
+                    structure_path=row.get("structure_path") or "",
                 )
             )
-    return records
+            feature_rows[frame_label] = {
+                column: parse_float(row.get(column), 0.0)
+                for column in feature_columns
+            }
+    return records, feature_rows, feature_columns
 
 
-def load_event_labels(csv_path: Path, frame_labels: set[str]) -> set[str]:
+def load_interface_features(csv_path: Path) -> dict[str, dict[str, float]]:
+    if not csv_path.exists():
+        return {}
+    rows: dict[str, dict[str, float]] = {}
+    with csv_path.open("r", newline="", encoding="utf-8") as handle:
+        reader = csv.DictReader(handle)
+        for row in reader:
+            frame_label = row["frame_label"]
+            rows[frame_label] = {
+                "interface_organic_surface": parse_float(row.get("organic-surface"), 0.0),
+                "interface_water_surface": parse_float(row.get("water-surface"), 0.0),
+                "interface_organic_water": parse_float(row.get("organic-water"), 0.0),
+            }
+    return rows
+
+
+def parse_bond_event_counts(encoded_events: str) -> dict[str, float]:
+    counts = {
+        "event_formed_count": 0.0,
+        "event_broken_count": 0.0,
+        "event_pair_cc": 0.0,
+        "event_pair_co": 0.0,
+        "event_pair_ozn": 0.0,
+        "event_pair_ho": 0.0,
+    }
+    for event_type, pair_label in EVENT_TOKEN_PATTERN.findall(encoded_events):
+        key = "event_formed_count" if event_type == "formed" else "event_broken_count"
+        counts[key] += 1.0
+        if pair_label == "C-C":
+            counts["event_pair_cc"] += 1.0
+        elif pair_label == "C-O":
+            counts["event_pair_co"] += 1.0
+        elif pair_label == "O-Zn":
+            counts["event_pair_ozn"] += 1.0
+        elif pair_label == "H-O":
+            counts["event_pair_ho"] += 1.0
+    return counts
+
+
+def load_bond_features(csv_path: Path) -> dict[str, dict[str, float]]:
+    if not csv_path.exists():
+        return {}
+    rows: dict[str, dict[str, float]] = {}
+    with csv_path.open("r", newline="", encoding="utf-8") as handle:
+        reader = csv.DictReader(handle)
+        events_column = next(
+            (name for name in (reader.fieldnames or []) if name.startswith("events(")),
+            "",
+        )
+        for row in reader:
+            frame_label = row["frame_label"]
+            features = {
+                "event_count": parse_float(row.get("event_count"), 0.0),
+            }
+            features.update(parse_bond_event_counts(row.get(events_column, "")))
+            rows[frame_label] = features
+    return rows
+
+
+def load_coordination_labels(csv_path: Path) -> set[str]:
     if not csv_path.exists():
         return set()
-    selected: set[str] = set()
+    labels: set[str] = set()
     with csv_path.open("r", newline="", encoding="utf-8") as handle:
         reader = csv.DictReader(handle)
         for row in reader:
             frame_label = row.get("frame_label")
-            if frame_label and frame_label in frame_labels:
-                selected.add(frame_label)
-    return selected
+            if frame_label:
+                labels.add(frame_label)
+    return labels
 
 
-def build_labels(records: list[FrameRecord], config: dict[str, Any], root: Path) -> tuple[np.ndarray, dict[str, int]]:
-    frame_labels = {record.frame_label for record in records}
-    bond_labels = load_event_labels((root / config["labels"]["bond_events"]).resolve(), frame_labels)
-    coordination_labels = load_event_labels(
-        (root / config["labels"]["coordination_events"]).resolve(),
-        frame_labels,
-    )
+def build_feature_matrix(records: list[FrameRecord], config: dict[str, Any], root: Path) -> tuple[np.ndarray, list[str], dict[str, float]]:
+    input_cfg = config["input"]
+    vdw_rows, bond_rows, interface_rows = {}, {}, {}
+    _, vdw_rows, vdw_feature_columns = load_vdw_records((root / input_cfg["vdw_scores"]).resolve())
+    bond_rows = load_bond_features((root / input_cfg["bond_events"]).resolve())
+    interface_rows = load_interface_features((root / input_cfg["bond_interface_counts"]).resolve())
+
+    feature_names = [
+        *vdw_feature_columns,
+        "event_count",
+        "event_formed_count",
+        "event_broken_count",
+        "event_pair_cc",
+        "event_pair_co",
+        "event_pair_ozn",
+        "event_pair_ho",
+        "interface_organic_surface",
+        "interface_water_surface",
+        "interface_organic_water",
+        "interface_total",
+        "event_delta",
+        "vdw_event_coupling",
+    ]
+
+    matrix: list[list[float]] = []
+    max_event_count = 0.0
+    max_vdw_score = 0.0
+    for record in records:
+        vdw = dict(vdw_rows.get(record.frame_label, {}))
+        bond = dict(bond_rows.get(record.frame_label, {}))
+        interface = dict(interface_rows.get(record.frame_label, {}))
+
+        interface_total = (
+            float(interface.get("interface_organic_surface", 0.0))
+            + float(interface.get("interface_water_surface", 0.0))
+            + float(interface.get("interface_organic_water", 0.0))
+        )
+        event_delta = float(bond.get("event_formed_count", 0.0)) - float(bond.get("event_broken_count", 0.0))
+        vdw_total_score = float(vdw.get(config["labels"]["vdw_score_column"], 0.0))
+        vdw_event_coupling = vdw_total_score * (1.0 + float(bond.get("event_count", 0.0)))
+
+        row = {
+            **{name: float(vdw.get(name, 0.0)) for name in vdw_feature_columns},
+            "event_count": float(bond.get("event_count", 0.0)),
+            "event_formed_count": float(bond.get("event_formed_count", 0.0)),
+            "event_broken_count": float(bond.get("event_broken_count", 0.0)),
+            "event_pair_cc": float(bond.get("event_pair_cc", 0.0)),
+            "event_pair_co": float(bond.get("event_pair_co", 0.0)),
+            "event_pair_ozn": float(bond.get("event_pair_ozn", 0.0)),
+            "event_pair_ho": float(bond.get("event_pair_ho", 0.0)),
+            "interface_organic_surface": float(interface.get("interface_organic_surface", 0.0)),
+            "interface_water_surface": float(interface.get("interface_water_surface", 0.0)),
+            "interface_organic_water": float(interface.get("interface_organic_water", 0.0)),
+            "interface_total": interface_total,
+            "event_delta": event_delta,
+            "vdw_event_coupling": vdw_event_coupling,
+        }
+        max_event_count = max(max_event_count, row["event_count"])
+        max_vdw_score = max(max_vdw_score, vdw_total_score)
+        matrix.append([row[name] for name in feature_names])
+
+    metadata = {"max_event_count": max_event_count, "max_vdw_score": max_vdw_score}
+    return np.asarray(matrix, dtype=np.float32), feature_names, metadata
+
+
+def build_labels(records: list[FrameRecord], config: dict[str, Any], root: Path) -> tuple[np.ndarray, dict[str, int | float]]:
+    input_cfg = config["input"]
+    label_cfg = config["labels"]
+    bond_rows = load_bond_features((root / input_cfg["bond_events"]).resolve())
+    interface_rows = load_interface_features((root / input_cfg["bond_interface_counts"]).resolve())
+    _, vdw_rows, _ = load_vdw_records((root / input_cfg["vdw_scores"]).resolve())
+    coordination_labels = load_coordination_labels((root / input_cfg["coordination_events"]).resolve())
+
+    vdw_values = [
+        float(row.get(label_cfg["vdw_score_column"], 0.0))
+        for row in vdw_rows.values()
+    ]
+    percentile = float(label_cfg.get("vdw_positive_percentile", 90.0))
+    vdw_threshold = float(np.percentile(vdw_values, percentile)) if vdw_values else math.inf
 
     labels = np.zeros(len(records), dtype=np.float32)
     positives = 0
+    bond_positive = 0
+    interface_positive = 0
+    vdw_positive = 0
+    coordination_positive = 0
+
     for idx, record in enumerate(records):
-        is_positive = record.frame_label in bond_labels or record.frame_label in coordination_labels
-        if is_positive:
-            labels[idx] = 1.0
-            positives += 1
+        bond = bond_rows.get(record.frame_label, {})
+        interface = interface_rows.get(record.frame_label, {})
+        vdw = vdw_rows.get(record.frame_label, {})
+
+        has_bond_change = float(bond.get("event_count", 0.0)) >= float(label_cfg.get("min_event_count", 1.0))
+        interface_total = (
+            float(interface.get("interface_organic_surface", 0.0))
+            + float(interface.get("interface_water_surface", 0.0))
+            + float(interface.get("interface_organic_water", 0.0))
+        )
+        has_interface_change = interface_total >= float(label_cfg.get("min_interface_count", 1.0))
+        has_vdw_signal = float(vdw.get(label_cfg["vdw_score_column"], 0.0)) >= vdw_threshold
+        has_coordination_signal = record.frame_label in coordination_labels
+
+        is_positive = has_bond_change or has_interface_change or has_vdw_signal or has_coordination_signal
+        labels[idx] = 1.0 if is_positive else 0.0
+        positives += int(is_positive)
+        bond_positive += int(has_bond_change)
+        interface_positive += int(has_interface_change)
+        vdw_positive += int(has_vdw_signal)
+        coordination_positive += int(has_coordination_signal)
 
     counts = {
         "positive_labels": positives,
         "negative_labels": int(len(records) - positives),
-        "bond_positive_frames": len(bond_labels),
-        "coordination_positive_frames": len(coordination_labels),
+        "bond_positive_frames": bond_positive,
+        "interface_positive_frames": interface_positive,
+        "vdw_positive_frames": vdw_positive,
+        "coordination_positive_frames": coordination_positive,
+        "vdw_positive_threshold": float(vdw_threshold if math.isfinite(vdw_threshold) else 0.0),
     }
     return labels, counts
 
@@ -246,22 +416,25 @@ def export_scores(
     records: list[FrameRecord],
     labels: np.ndarray,
     scores: np.ndarray,
+    feature_matrix: np.ndarray,
+    feature_names: list[str],
     score_column: str,
 ) -> None:
-    fieldnames = ["frame_index", "frame_label", "structure_path", "label", score_column]
+    fieldnames = ["frame_index", "frame_label", "structure_path", "label", score_column, *feature_names]
     with path.open("w", newline="", encoding="utf-8") as handle:
         writer = csv.DictWriter(handle, fieldnames=fieldnames)
         writer.writeheader()
-        for record, label, score in zip(records, labels, scores):
-            writer.writerow(
-                {
-                    "frame_index": record.frame_index,
-                    "frame_label": record.frame_label,
-                    "structure_path": record.structure_path,
-                    "label": int(label),
-                    score_column: f"{float(score):.6f}",
-                }
-            )
+        for record, label, score, features in zip(records, labels, scores, feature_matrix, strict=True):
+            row = {
+                "frame_index": record.frame_index,
+                "frame_label": record.frame_label,
+                "structure_path": record.structure_path,
+                "label": int(label),
+                score_column: f"{float(score):.6f}",
+            }
+            for name, value in zip(feature_names, features, strict=True):
+                row[name] = f"{float(value):.6f}"
+            writer.writerow(row)
 
 
 def select_records(
@@ -313,11 +486,7 @@ def main() -> None:
     root = Path(__file__).resolve().parent
     config = load_config(root / "config.yaml")
     output_root, selected_dir = ensure_output_dirs(root, config)
-    summary_path = build_summary_path(output_root, config)
-
-    descriptor_path = (root / config["input"]["descriptors"]).resolve()
-    frame_index_path = (root / config["input"]["frame_index"]).resolve()
-    raw_frames_dir = (root / config["input"]["raw_frames"]).resolve()
+    summary_path = output_root / config["output"]["summary_json"]
 
     if torch is None:
         write_summary(
@@ -332,27 +501,22 @@ def main() -> None:
         print("PyTorch is not installed. Selector training was skipped.")
         return
 
-    if not descriptor_path.exists() or not frame_index_path.exists():
+    vdw_csv_path = (root / config["input"]["vdw_scores"]).resolve()
+    if not vdw_csv_path.exists():
         write_summary(
             summary_path,
             {
                 "module": "nn_uncertainty",
                 "role": "neural_network_structure_selector",
                 "status": "missing_input",
-                "descriptor_input": str(descriptor_path),
-                "frame_index_input": str(frame_index_path),
-                "message": "SOAP descriptors and frame index are required before training.",
+                "vdw_scores_input": str(vdw_csv_path),
+                "message": "Run vdw_energy_predictor before training the selector.",
             },
         )
-        print("Missing descriptor inputs. Selector training was skipped.")
+        print("Missing vdw_scores.csv. Selector training was skipped.")
         return
 
-    features = np.load(descriptor_path)
-    records = load_frame_index(frame_index_path, raw_frames_dir)
-    if features.ndim != 2:
-        raise SystemExit("Descriptor array must be 2D: [num_frames, feature_dim].")
-    if len(records) != len(features):
-        raise SystemExit("Descriptor rows and frame index rows must match.")
+    records, _, _ = load_vdw_records(vdw_csv_path)
     if len(records) < 2:
         write_summary(
             summary_path,
@@ -367,6 +531,7 @@ def main() -> None:
         print("Not enough samples for selector training.")
         return
 
+    feature_matrix, feature_names, feature_metadata = build_feature_matrix(records, config, root)
     labels, label_counts = build_labels(records, config, root)
     if int(label_counts["positive_labels"]) == 0:
         write_summary(
@@ -377,21 +542,21 @@ def main() -> None:
                 "status": "missing_positive_labels",
                 "num_samples": len(records),
                 **label_counts,
-                "message": "No positive labels were generated from upstream modules.",
+                "message": "No positive labels were generated from the heuristic rules.",
             },
         )
         print("No positive labels found. Selector training was skipped.")
         return
 
     seed = int(config["model"].get("seed", 42))
-    normalized_features, mean, std = standardize_features(features)
+    normalized_features, mean, std = standardize_features(feature_matrix)
     model, losses = train_selector(normalized_features, labels, config["model"], seed)
     scores = score_all_frames(model, normalized_features)
 
     scores_csv = output_root / config["output"]["scores_csv"]
     selected_csv = output_root / config["output"]["selected_csv"]
     score_column = config["selection"]["score_column"]
-    export_scores(scores_csv, records, labels, scores, score_column)
+    export_scores(scores_csv, records, labels, scores, feature_matrix, feature_names, score_column)
 
     selected = select_records(
         records,
@@ -406,11 +571,11 @@ def main() -> None:
         "module": "nn_uncertainty",
         "role": "neural_network_structure_selector",
         "status": "completed",
-        "descriptor_input": str(descriptor_path),
-        "frame_index_input": str(frame_index_path),
-        "raw_frames_input": str(raw_frames_dir),
+        "vdw_scores_input": str(vdw_csv_path),
         "num_samples": len(records),
-        "feature_dim": int(features.shape[1]),
+        "feature_dim": int(feature_matrix.shape[1]),
+        "feature_names": feature_names,
+        **feature_metadata,
         **label_counts,
         **losses,
         "selection_threshold": float(config["selection"]["threshold"]),

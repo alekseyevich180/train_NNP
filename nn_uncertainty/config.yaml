@@ -1,19 +1,22 @@
 input:
-  descriptors: "../soap_descriptors/outputs/descriptors.npy"
-  frame_index: "../soap_descriptors/outputs/frame_index.csv"
-  raw_frames: "../aimd_scripts/AIMD_dataset/cif_frames"
+  vdw_scores: "../vdw_energy_predictor/outputs/vdw_scores.csv"
+  bond_events: "../bond_change_detection/outputs/bond_events.csv"
+  bond_interface_counts: "../bond_change_detection/outputs/bond_interface_counts.csv"
+  coordination_events: "../zn_o_coordination/outputs/coordination_events.csv"
 
 labels:
-  bond_events: "../bond_change_detection/outputs/bond_events.csv"
-  coordination_events: "../zn_o_coordination/outputs/coordination_events.csv"
   mode: "heuristic"
+  vdw_score_column: "vdw_total_score"
+  vdw_positive_percentile: 90
+  min_event_count: 1
+  min_interface_count: 1
 
 model:
   backend: "pytorch"
   task: "binary_classification"
-  hidden_dims: [256, 128, 64]
+  hidden_dims: [128, 64, 32]
   dropout: 0.1
-  epochs: 50
+  epochs: 40
   batch_size: 64
   learning_rate: 0.001
   weight_decay: 0.00001
