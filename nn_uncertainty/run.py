@@ -175,6 +175,32 @@ def load_bond_features(csv_path: Path) -> dict[str, dict[str, float]]:
     return rows
 
 
+def load_bond_records(csv_path: Path) -> list[FrameRecord]:
+    if not csv_path.exists():
+        return []
+    records: list[FrameRecord] = []
+    with csv_path.open("r", newline="", encoding="utf-8") as handle:
+        reader = csv.DictReader(handle)
+        for row in reader:
+            frame_label = row.get("frame_label")
+            if not frame_label:
+                continue
+            records.append(
+                FrameRecord(
+                    frame_label=frame_label,
+                    frame_index=parse_int(row.get("frame_index"), len(records)),
+                    structure_path=row.get("structure_path") or "",
+                )
+            )
+    return records
+
+
+def load_optional_vdw_records(vdw_csv_path: Path) -> tuple[list[FrameRecord], dict[str, dict[str, float]], list[str]]:
+    if not vdw_csv_path.exists():
+        return [], {}, []
+    return load_vdw_records(vdw_csv_path)
+
+
 def load_coordination_labels(csv_path: Path) -> set[str]:
     if not csv_path.exists():
         return set()
@@ -191,7 +217,7 @@ def load_coordination_labels(csv_path: Path) -> set[str]:
 def build_feature_matrix(records: list[FrameRecord], config: dict[str, Any], root: Path) -> tuple[np.ndarray, list[str], dict[str, float]]:
     input_cfg = config["input"]
     vdw_rows, bond_rows, interface_rows = {}, {}, {}
-    _, vdw_rows, vdw_feature_columns = load_vdw_records((root / input_cfg["vdw_scores"]).resolve())
+    _, vdw_rows, vdw_feature_columns = load_optional_vdw_records((root / input_cfg["vdw_scores"]).resolve())
     bond_rows = load_bond_features((root / input_cfg["bond_events"]).resolve())
     interface_rows = load_interface_features((root / input_cfg["bond_interface_counts"]).resolve())
 
@@ -258,7 +284,7 @@ def build_labels(records: list[FrameRecord], config: dict[str, Any], root: Path)
     label_cfg = config["labels"]
     bond_rows = load_bond_features((root / input_cfg["bond_events"]).resolve())
     interface_rows = load_interface_features((root / input_cfg["bond_interface_counts"]).resolve())
-    _, vdw_rows, _ = load_vdw_records((root / input_cfg["vdw_scores"]).resolve())
+    _, vdw_rows, _ = load_optional_vdw_records((root / input_cfg["vdw_scores"]).resolve())
     coordination_labels = load_coordination_labels((root / input_cfg["coordination_events"]).resolve())
 
     vdw_values = [
@@ -501,22 +527,36 @@ def main() -> None:
         print("PyTorch is not installed. Selector training was skipped.")
         return
 
-    vdw_csv_path = (root / config["input"]["vdw_scores"]).resolve()
-    if not vdw_csv_path.exists():
+    bond_csv_path = (root / config["input"]["bond_events"]).resolve()
+    if not bond_csv_path.exists():
         write_summary(
             summary_path,
             {
                 "module": "nn_uncertainty",
                 "role": "neural_network_structure_selector",
                 "status": "missing_input",
-                "vdw_scores_input": str(vdw_csv_path),
-                "message": "Run vdw_energy_predictor before training the selector.",
+                "bond_events_input": str(bond_csv_path),
+                "message": "bond_events.csv is required to train the selector.",
             },
         )
-        print("Missing vdw_scores.csv. Selector training was skipped.")
+        print("Missing bond_events.csv. Selector training was skipped.")
         return
 
-    records, _, _ = load_vdw_records(vdw_csv_path)
+    vdw_csv_path = (root / config["input"]["vdw_scores"]).resolve()
+    vdw_records, _, _ = load_optional_vdw_records(vdw_csv_path)
+    bond_records = load_bond_records(bond_csv_path)
+    records = bond_records
+    if vdw_records:
+        vdw_record_map = {record.frame_label: record for record in vdw_records}
+        records = [
+            FrameRecord(
+                frame_label=record.frame_label,
+                frame_index=record.frame_index,
+                structure_path=vdw_record_map.get(record.frame_label, record).structure_path,
+            )
+            for record in bond_records
+        ]
+
     if len(records) < 2:
         write_summary(
             summary_path,
@@ -571,7 +611,9 @@ def main() -> None:
         "module": "nn_uncertainty",
         "role": "neural_network_structure_selector",
         "status": "completed",
+        "bond_events_input": str(bond_csv_path),
         "vdw_scores_input": str(vdw_csv_path),
+        "vdw_scores_available": bool(vdw_records),
         "num_samples": len(records),
         "feature_dim": int(feature_matrix.shape[1]),
         "feature_names": feature_names,
