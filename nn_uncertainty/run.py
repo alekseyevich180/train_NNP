@@ -95,10 +95,17 @@ def load_vdw_records(vdw_csv_path: Path) -> tuple[list[FrameRecord], dict[str, d
         reader = csv.DictReader(handle)
         if reader.fieldnames is None:
             raise SystemExit("vdw_scores.csv is missing a header row.")
+        metadata_columns = {
+            "frame_index",
+            "frame_label",
+            "structure_path",
+            "dataset_name",
+            "previous_frame_label",
+        }
         feature_columns = [
             name
             for name in reader.fieldnames
-            if name not in {"frame_index", "frame_label", "structure_path"}
+            if name not in metadata_columns
         ]
         for row in reader:
             frame_label = row["frame_label"]
