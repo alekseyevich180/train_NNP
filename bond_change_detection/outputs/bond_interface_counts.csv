@@ -1,1 +1,6 @@
 frame_index,frame_label,previous_frame_label,organic-surface,water-surface,organic-water
+1,set_000__step_00000100,set_000__step_00000050,0,0,0
+2,set_000__step_00000150,set_000__step_00000100,1,0,0
+3,set_000__step_00000200,set_000__step_00000150,0,1,0
+4,set_000__step_00000250,set_000__step_00000200,1,0,0
+5,set_000__step_00000300,set_000__step_00000250,2,1,0

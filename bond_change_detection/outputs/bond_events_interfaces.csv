@@ -1,1 +1,6 @@
 frame_index,frame_label,previous_frame_label,interface_event_count,"events(interface_type,event_type,atom_i,atom_j,group_i,group_j,symbol_i,symbol_j,pair,distance_broken,distance_formed)"
+1,set_000__step_00000100,set_000__step_00000050,0,
+2,set_000__step_00000150,set_000__step_00000100,1,"{organic-surface,formed,573,965,surface,organic,Zn,O,O-Zn,,2.190844}"
+3,set_000__step_00000200,set_000__step_00000150,1,"{water-surface,formed,893,1032,surface,water,Zn,O,O-Zn,,2.192121}"
+4,set_000__step_00000250,set_000__step_00000200,1,"{organic-surface,formed,539,810,organic,surface,O,Zn,O-Zn,,2.188693}"
+5,set_000__step_00000300,set_000__step_00000250,3,"{organic-surface,formed,533,979,surface,organic,Zn,O,O-Zn,,2.133002} {organic-surface,formed,539,830,organic,surface,O,Zn,O-Zn,,2.063304} {water-surface,broken,893,1032,surface,water,Zn,O,O-Zn,1.911590,}"
