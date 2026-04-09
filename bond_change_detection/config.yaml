@@ -1,5 +1,5 @@
 input:
-  trajectory: "../../aimd_data/intermediates_enol2_H_dataset/cif_frames" 
+  trajectory: "../../aimd_data/intermediates_acid_dataset/cif_frames" 
   format: "cif_dir"
 
 chemistry:
