@@ -4,3 +4,4 @@ frame_index,frame_label,previous_frame_label,interface_event_count,"events(inter
 3,set_000__step_00000200,set_000__step_00000150,1,"{water-surface,formed,893,1032,surface,water,Zn,O,O-Zn,,2.192121}"
 4,set_000__step_00000250,set_000__step_00000200,1,"{organic-surface,formed,539,810,organic,surface,O,Zn,O-Zn,,2.188693}"
 5,set_000__step_00000300,set_000__step_00000250,3,"{organic-surface,formed,533,979,surface,organic,Zn,O,O-Zn,,2.133002} {organic-surface,formed,539,830,organic,surface,O,Zn,O-Zn,,2.063304} {water-surface,broken,893,1032,surface,water,Zn,O,O-Zn,1.911590,}"
+6,set_000__step_00000350,set_000__step_00000300,0,

@@ -4,3 +4,4 @@ frame_index,frame_label,previous_frame_label,organic-surface,water-surface,organ
 3,set_000__step_00000200,set_000__step_00000150,0,1,0
 4,set_000__step_00000250,set_000__step_00000200,1,0,0
 5,set_000__step_00000300,set_000__step_00000250,2,1,0
+6,set_000__step_00000350,set_000__step_00000300,0,0,0
