@@ -1,8 +1,8 @@
 input:
-  vdw_scores: "../../aimd_data/intermediates_enol_dataset/vdw/vdw_scores_clean.csv" 
-  bond_events: "../bond_change_detection/outputs_enol/bond_events.csv"
-  bond_interface_counts: "../bond_change_detection/outputs_enol/bond_interface_counts.csv"
-  coordination_events: "../zn_o_coordination/outputs_enol/coordination_events.csv"
+  vdw_scores: "../../aimd_data/ketone_dataset/vdw/vdw_scores_clean.csv" 
+  bond_events: "../bond_change_detection/outputs_ketone/bond_events.csv"
+  bond_interface_counts: "../bond_change_detection/outputs_ketone/bond_interface_counts.csv"
+  coordination_events: "../zn_o_coordination/outputs_ketone/coordination_events.csv"
 
 labels:
   mode: "heuristic"
