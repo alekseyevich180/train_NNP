@@ -11,9 +11,9 @@ from pathlib import Path
 from typing import Any
 
 import numpy as np
-from clean_vdw_csv import clean_csv, resolve_input_csv
 from dir_selected import copy_selected_deepmd_sets
 from extract_coordination_from_bond import extract_coordination_events
+from share.clean_vdw_csv import clean_csv, resolve_input_csv
 
 try:
     import yaml
@@ -668,6 +668,23 @@ def main() -> None:
             },
         )
         print("No positive labels found. Selector training was skipped.")
+        return
+    if int(label_counts["negative_labels"]) == 0:
+        write_summary(
+            summary_path,
+            {
+                "module": "nn_uncertainty",
+                "role": "neural_network_structure_selector",
+                "status": "missing_negative_labels",
+                "num_samples": len(records),
+                **label_counts,
+                "message": (
+                    "All samples were labeled positive by the heuristic rules. "
+                    "Adjust label thresholds or use more selective event inputs."
+                ),
+            },
+        )
+        print("All samples were labeled positive. Selector training was skipped.")
         return
 
     seed = int(config["model"].get("seed", 42))
