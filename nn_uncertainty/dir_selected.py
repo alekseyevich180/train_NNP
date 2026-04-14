@@ -133,48 +133,54 @@ def copy_type_files(source_deepmd: Path, output_dir: Path) -> None:
             shutil.copy2(source_file, output_dir / filename)
 
 
-def main() -> None:
-    args = parse_args()
-    root = Path(__file__).resolve().parent
-    selected_csv = (root / args.selected_csv).resolve()
-    config_path = (root / args.config).resolve()
+def copy_selected_deepmd_sets(
+    selected_csv: Path,
+    config_path: Path,
+    source_deepmd: Path | None = None,
+    output_dir: Path | None = None,
+    summary_name: str = "copied_sets_summary.csv",
+    copy_type_files_flag: bool = False,
+    overwrite: bool = False,
+) -> dict[str, object]:
+    resolved_selected_csv = selected_csv.expanduser().resolve()
+    resolved_config_path = config_path.expanduser().resolve()
 
-    if not selected_csv.exists():
-        raise SystemExit(f"selected_structures CSV not found: {selected_csv}")
-    if not config_path.exists():
-        raise SystemExit(f"config file not found: {config_path}")
+    if not resolved_selected_csv.exists():
+        raise SystemExit(f"selected_structures CSV not found: {resolved_selected_csv}")
+    if not resolved_config_path.exists():
+        raise SystemExit(f"config file not found: {resolved_config_path}")
 
-    if args.source_deepmd:
-        source_deepmd = Path(args.source_deepmd).expanduser().resolve()
-        dataset_dir = source_deepmd.parent
+    if source_deepmd is not None:
+        resolved_source_deepmd = source_deepmd.expanduser().resolve()
+        dataset_dir = resolved_source_deepmd.parent
     else:
-        dataset_name = infer_dataset_name_from_config(config_path)
-        aimd_root = infer_aimd_root_from_config(config_path)
+        dataset_name = infer_dataset_name_from_config(resolved_config_path)
+        aimd_root = infer_aimd_root_from_config(resolved_config_path)
         dataset_dir = aimd_root / dataset_name
-        source_deepmd = dataset_dir / "deepmd_dataset"
+        resolved_source_deepmd = dataset_dir / "deepmd_dataset"
 
-    if not source_deepmd.exists():
-        raise SystemExit(f"source deepmd_dataset not found: {source_deepmd}")
+    if not resolved_source_deepmd.exists():
+        raise SystemExit(f"source deepmd_dataset not found: {resolved_source_deepmd}")
 
-    output_dir = (
-        Path(args.output_dir).expanduser().resolve()
-        if args.output_dir
+    resolved_output_dir = (
+        output_dir.expanduser().resolve()
+        if output_dir is not None
         else dataset_dir / "deepmd_selected_from_nnp"
     )
-    output_dir.mkdir(parents=True, exist_ok=True)
+    resolved_output_dir.mkdir(parents=True, exist_ok=True)
 
-    if args.copy_type_files:
-        copy_type_files(source_deepmd, output_dir)
+    if copy_type_files_flag:
+        copy_type_files(resolved_source_deepmd, resolved_output_dir)
 
-    selected_sets = load_selected_set_names(selected_csv)
+    selected_sets = load_selected_set_names(resolved_selected_csv)
     summary_rows: list[dict[str, str]] = []
     copied = 0
     missing = 0
     skipped = 0
 
     for frame_label, set_name in selected_sets:
-        source_dir = source_deepmd / set_name
-        destination_dir = output_dir / set_name
+        source_dir = resolved_source_deepmd / set_name
+        destination_dir = resolved_output_dir / set_name
         if not source_dir.exists():
             summary_rows.append(
                 {
@@ -188,7 +194,7 @@ def main() -> None:
             continue
 
         if destination_dir.exists():
-            if not args.overwrite:
+            if not overwrite:
                 summary_rows.append(
                     {
                         "frame_label": frame_label,
@@ -212,7 +218,7 @@ def main() -> None:
         )
         copied += 1
 
-    summary_csv = output_dir / args.summary_name
+    summary_csv = resolved_output_dir / summary_name
     with summary_csv.open("w", newline="", encoding="utf-8") as handle:
         writer = csv.DictWriter(
             handle,
@@ -221,14 +227,39 @@ def main() -> None:
         writer.writeheader()
         writer.writerows(summary_rows)
 
-    print(f"Config file: {config_path}")
-    print(f"Selected CSV: {selected_csv}")
-    print(f"Source DeepMD: {source_deepmd}")
-    print(f"Output directory: {output_dir}")
+    print(f"Config file: {resolved_config_path}")
+    print(f"Selected CSV: {resolved_selected_csv}")
+    print(f"Source DeepMD: {resolved_source_deepmd}")
+    print(f"Output directory: {resolved_output_dir}")
     print(f"Copied set folders: {copied}")
     print(f"Missing set folders: {missing}")
     print(f"Skipped existing folders: {skipped}")
     print(f"Summary CSV: {summary_csv}")
+
+    return {
+        "config_path": str(resolved_config_path),
+        "selected_csv": str(resolved_selected_csv),
+        "source_deepmd": str(resolved_source_deepmd),
+        "output_dir": str(resolved_output_dir),
+        "summary_csv": str(summary_csv),
+        "copied": copied,
+        "missing": missing,
+        "skipped": skipped,
+    }
+
+
+def main() -> None:
+    args = parse_args()
+    root = Path(__file__).resolve().parent
+    copy_selected_deepmd_sets(
+        selected_csv=(root / args.selected_csv).resolve(),
+        config_path=(root / args.config).resolve(),
+        source_deepmd=Path(args.source_deepmd) if args.source_deepmd else None,
+        output_dir=Path(args.output_dir) if args.output_dir else None,
+        summary_name=args.summary_name,
+        copy_type_files_flag=args.copy_type_files,
+        overwrite=args.overwrite,
+    )
 
 
 if __name__ == "__main__":

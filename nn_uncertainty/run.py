@@ -12,6 +12,7 @@ from typing import Any
 
 import numpy as np
 from clean_vdw_csv import clean_csv, resolve_input_csv
+from dir_selected import copy_selected_deepmd_sets
 from extract_coordination_from_bond import extract_coordination_events
 
 try:
@@ -570,6 +571,17 @@ def copy_selected_frames(selected: list[tuple[FrameRecord, float]], selected_dir
     return copied
 
 
+def export_selected_deepmd_sets(selected_csv: Path, config_path: Path) -> dict[str, object] | None:
+    if not selected_csv.exists() or not config_path.exists():
+        return None
+    return copy_selected_deepmd_sets(
+        selected_csv=selected_csv,
+        config_path=config_path,
+        copy_type_files_flag=True,
+        overwrite=False,
+    )
+
+
 def main() -> None:
     root = Path(__file__).resolve().parent
     config = load_config(root / "config.yaml")
@@ -676,6 +688,7 @@ def main() -> None:
     )
     export_selected(selected_csv, selected, score_column)
     copied_count = copy_selected_frames(selected, selected_dir)
+    deepmd_export = export_selected_deepmd_sets(selected_csv, root / "config.yaml")
 
     summary = {
         "module": "nn_uncertainty",
@@ -696,6 +709,7 @@ def main() -> None:
         "selection_threshold": float(config["selection"]["threshold"]),
         "selected_count": len(selected),
         "copied_selected_frames": copied_count,
+        "deepmd_selected_export": deepmd_export or {},
         "normalization": {
             "mean_shape": list(mean.shape),
             "std_shape": list(std.shape),
