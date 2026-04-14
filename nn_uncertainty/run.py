@@ -12,6 +12,7 @@ from typing import Any
 
 import numpy as np
 from clean_vdw_csv import clean_csv, resolve_input_csv
+from extract_coordination_from_bond import extract_coordination_events
 
 try:
     import yaml
@@ -230,6 +231,20 @@ def prepare_clean_vdw_csv(vdw_input_path: Path, output_name: str = "vdw_scores_c
         return None
     input_csv = resolve_input_csv(source_path)
     return clean_csv(input_csv, output_name)
+
+
+def prepare_coordination_events_csv(
+    bond_csv_path: Path,
+    coordination_output_path: Path,
+    pair: str = "O-Zn",
+) -> Path | None:
+    if not bond_csv_path.exists():
+        return None
+    return extract_coordination_events(
+        bond_csv=bond_csv_path,
+        output_csv=coordination_output_path,
+        pair=pair,
+    )
 
 
 def load_coordination_labels(csv_path: Path) -> set[str]:
@@ -593,6 +608,13 @@ def main() -> None:
     prepared_vdw_csv_path = prepare_clean_vdw_csv(raw_vdw_input_path)
     vdw_records, _, _ = load_optional_vdw_records(prepared_vdw_csv_path) if prepared_vdw_csv_path is not None else ([], {}, [])
     bond_records = load_bond_records(bond_csv_path)
+    raw_coordination_input_path = (root / config["input"]["coordination_events"]).resolve()
+    prepared_coordination_csv_path = prepare_coordination_events_csv(
+        bond_csv_path=bond_csv_path,
+        coordination_output_path=raw_coordination_input_path,
+    )
+    if prepared_coordination_csv_path is not None:
+        config["input"]["coordination_events"] = str(prepared_coordination_csv_path)
     records = bond_records
     if vdw_records:
         vdw_record_map = {record.frame_label: record for record in vdw_records}
@@ -662,6 +684,8 @@ def main() -> None:
         "bond_events_input": str(bond_csv_path),
         "vdw_scores_input": str(raw_vdw_input_path),
         "vdw_scores_clean_input": str(prepared_vdw_csv_path) if prepared_vdw_csv_path is not None else "",
+        "coordination_events_input": str(raw_coordination_input_path),
+        "coordination_events_prepared_input": str(prepared_coordination_csv_path) if prepared_coordination_csv_path is not None else "",
         "vdw_scores_available": bool(vdw_records),
         "num_samples": len(records),
         "feature_dim": int(feature_matrix.shape[1]),

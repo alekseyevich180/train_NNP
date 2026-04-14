@@ -39,18 +39,21 @@ def normalize_pair(value: str) -> str:
     return text
 
 
-def main() -> None:
-    args = parse_args()
-    input_csv = Path(args.bond_csv).expanduser().resolve()
+def extract_coordination_events(
+    bond_csv: Path,
+    output_csv: Path | None = None,
+    pair: str = "O-Zn",
+) -> Path:
+    input_csv = bond_csv.expanduser().resolve()
     if not input_csv.exists():
         raise SystemExit(f"Input CSV does not exist: {input_csv}")
 
-    output_csv = (
-        Path(args.output).expanduser().resolve()
-        if args.output
+    resolved_output_csv = (
+        output_csv.expanduser().resolve()
+        if output_csv is not None
         else input_csv.with_name("coordination_events.csv")
     )
-    target_pair = normalize_pair(args.pair)
+    target_pair = normalize_pair(pair)
 
     rows_by_frame: dict[str, dict[str, object]] = {}
     counts_by_frame: dict[str, dict[str, int]] = defaultdict(lambda: {"formed": 0, "broken": 0, "total": 0})
@@ -66,8 +69,8 @@ def main() -> None:
             )
 
         for row in reader:
-            pair = normalize_pair(row.get("pair", ""))
-            if pair != target_pair:
+            current_pair = normalize_pair(row.get("pair", ""))
+            if current_pair != target_pair:
                 continue
 
             frame_label = row.get("frame_label", "").strip()
@@ -106,8 +109,8 @@ def main() -> None:
         row["formed_count"] = counts["formed"]
         row["broken_count"] = counts["broken"]
 
-    output_csv.parent.mkdir(parents=True, exist_ok=True)
-    with output_csv.open("w", newline="", encoding="utf-8") as handle:
+    resolved_output_csv.parent.mkdir(parents=True, exist_ok=True)
+    with resolved_output_csv.open("w", newline="", encoding="utf-8") as handle:
         writer = csv.DictWriter(
             handle,
             fieldnames=[
@@ -124,9 +127,19 @@ def main() -> None:
         writer.writerows(ordered_rows)
 
     print(f"Input CSV: {input_csv}")
-    print(f"Output CSV: {output_csv}")
+    print(f"Output CSV: {resolved_output_csv}")
     print(f"Extracted frames: {len(ordered_rows)}")
     print(f"Target pair: {target_pair}")
+    return resolved_output_csv
+
+
+def main() -> None:
+    args = parse_args()
+    extract_coordination_events(
+        bond_csv=Path(args.bond_csv),
+        output_csv=Path(args.output) if args.output else None,
+        pair=args.pair,
+    )
 
 
 if __name__ == "__main__":
