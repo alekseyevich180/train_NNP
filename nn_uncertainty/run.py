@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any
 
 import numpy as np
+from clean_vdw_csv import clean_csv, resolve_input_csv
 
 try:
     import yaml
@@ -208,6 +209,29 @@ def load_optional_vdw_records(vdw_csv_path: Path) -> tuple[list[FrameRecord], di
     return load_vdw_records(vdw_csv_path)
 
 
+def resolve_vdw_input_source(vdw_input_path: Path) -> Path | None:
+    if vdw_input_path.exists():
+        return vdw_input_path
+    if vdw_input_path.name == "vdw_scores_clean.csv":
+        sibling_candidates = (
+            vdw_input_path.with_name("vdw_scores.csv"),
+            vdw_input_path.with_name("vdw_summary.csv"),
+            vdw_input_path.parent,
+        )
+        for candidate in sibling_candidates:
+            if candidate.exists():
+                return candidate
+    return None
+
+
+def prepare_clean_vdw_csv(vdw_input_path: Path, output_name: str = "vdw_scores_clean.csv") -> Path | None:
+    source_path = resolve_vdw_input_source(vdw_input_path)
+    if source_path is None:
+        return None
+    input_csv = resolve_input_csv(source_path)
+    return clean_csv(input_csv, output_name)
+
+
 def load_coordination_labels(csv_path: Path) -> set[str]:
     if not csv_path.exists():
         return set()
@@ -221,10 +245,18 @@ def load_coordination_labels(csv_path: Path) -> set[str]:
     return labels
 
 
-def build_feature_matrix(records: list[FrameRecord], config: dict[str, Any], root: Path) -> tuple[np.ndarray, list[str], dict[str, float]]:
+def build_feature_matrix(
+    records: list[FrameRecord],
+    config: dict[str, Any],
+    root: Path,
+    vdw_csv_path: Path | None,
+) -> tuple[np.ndarray, list[str], dict[str, float]]:
     input_cfg = config["input"]
     vdw_rows, bond_rows, interface_rows = {}, {}, {}
-    _, vdw_rows, vdw_feature_columns = load_optional_vdw_records((root / input_cfg["vdw_scores"]).resolve())
+    if vdw_csv_path is not None:
+        _, vdw_rows, vdw_feature_columns = load_optional_vdw_records(vdw_csv_path)
+    else:
+        vdw_feature_columns = []
     bond_rows = load_bond_features((root / input_cfg["bond_events"]).resolve())
     interface_rows = load_interface_features((root / input_cfg["bond_interface_counts"]).resolve())
 
@@ -286,12 +318,20 @@ def build_feature_matrix(records: list[FrameRecord], config: dict[str, Any], roo
     return np.asarray(matrix, dtype=np.float32), feature_names, metadata
 
 
-def build_labels(records: list[FrameRecord], config: dict[str, Any], root: Path) -> tuple[np.ndarray, dict[str, int | float]]:
+def build_labels(
+    records: list[FrameRecord],
+    config: dict[str, Any],
+    root: Path,
+    vdw_csv_path: Path | None,
+) -> tuple[np.ndarray, dict[str, int | float]]:
     input_cfg = config["input"]
     label_cfg = config["labels"]
     bond_rows = load_bond_features((root / input_cfg["bond_events"]).resolve())
     interface_rows = load_interface_features((root / input_cfg["bond_interface_counts"]).resolve())
-    _, vdw_rows, _ = load_optional_vdw_records((root / input_cfg["vdw_scores"]).resolve())
+    if vdw_csv_path is not None:
+        _, vdw_rows, _ = load_optional_vdw_records(vdw_csv_path)
+    else:
+        vdw_rows = {}
     coordination_labels = load_coordination_labels((root / input_cfg["coordination_events"]).resolve())
 
     vdw_values = [
@@ -549,8 +589,9 @@ def main() -> None:
         print("Missing bond_events.csv. Selector training was skipped.")
         return
 
-    vdw_csv_path = (root / config["input"]["vdw_scores"]).resolve()
-    vdw_records, _, _ = load_optional_vdw_records(vdw_csv_path)
+    raw_vdw_input_path = (root / config["input"]["vdw_scores"]).resolve()
+    prepared_vdw_csv_path = prepare_clean_vdw_csv(raw_vdw_input_path)
+    vdw_records, _, _ = load_optional_vdw_records(prepared_vdw_csv_path) if prepared_vdw_csv_path is not None else ([], {}, [])
     bond_records = load_bond_records(bond_csv_path)
     records = bond_records
     if vdw_records:
@@ -578,8 +619,8 @@ def main() -> None:
         print("Not enough samples for selector training.")
         return
 
-    feature_matrix, feature_names, feature_metadata = build_feature_matrix(records, config, root)
-    labels, label_counts = build_labels(records, config, root)
+    feature_matrix, feature_names, feature_metadata = build_feature_matrix(records, config, root, prepared_vdw_csv_path)
+    labels, label_counts = build_labels(records, config, root, prepared_vdw_csv_path)
     if int(label_counts["positive_labels"]) == 0:
         write_summary(
             summary_path,
@@ -619,7 +660,8 @@ def main() -> None:
         "role": "neural_network_structure_selector",
         "status": "completed",
         "bond_events_input": str(bond_csv_path),
-        "vdw_scores_input": str(vdw_csv_path),
+        "vdw_scores_input": str(raw_vdw_input_path),
+        "vdw_scores_clean_input": str(prepared_vdw_csv_path) if prepared_vdw_csv_path is not None else "",
         "vdw_scores_available": bool(vdw_records),
         "num_samples": len(records),
         "feature_dim": int(feature_matrix.shape[1]),
