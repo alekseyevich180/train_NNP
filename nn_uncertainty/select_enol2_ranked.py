@@ -2,20 +2,14 @@ from __future__ import annotations
 
 import argparse
 import csv
-import importlib.util
 import json
 import re
 import shutil
-import sys
 from dataclasses import dataclass
 from pathlib import Path
 
-import yaml
-
-
-clean_csv = None
-resolve_input_csv = None
-copy_selected_deepmd_sets = None
+from nn_uncertainty.share.dir_selected import copy_selected_deepmd_sets
+from share.clean_vdw_csv import clean_csv, resolve_input_csv
 
 
 STEP_PATTERN = re.compile(r"step_(\d+)")
@@ -38,19 +32,14 @@ def parse_args() -> argparse.Namespace:
         )
     )
     parser.add_argument(
-        "--config",
-        default="config.yaml",
-        help="Path to nn_uncertainty config.yaml for resolving share_root.",
-    )
-    parser.add_argument(
         "--vdw-input",
-        default="",
-        help="Optional override path to a vdW CSV file or vdW directory.",
+        default="../aimd_data/intermediates_enol2_H_dataset/vdw",
+        help="Path to a vdW CSV file or vdW directory.",
     )
     parser.add_argument(
         "--interface-csv",
         default="",
-        help="Optional override path to bond_interface_counts.csv.",
+        help="Optional bond_interface_counts.csv path.",
     )
     parser.add_argument(
         "--output-root",
@@ -76,63 +65,10 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--copy-deepmd",
-        action=argparse.BooleanOptionalAction,
-        default=True,
-        help="Copy matching DeepMD set directories. Default: enabled.",
+        action="store_true",
+        help="Copy matching DeepMD set directories.",
     )
     return parser.parse_args()
-
-
-def load_config(config_path: Path) -> dict:
-    with config_path.open("r", encoding="utf-8") as handle:
-        return yaml.safe_load(handle)
-
-
-def resolve_share_root(config_path: Path, config: dict) -> Path:
-    runtime_cfg = config.get("runtime", {})
-    share_root = str(runtime_cfg.get("share_root", "share"))
-    return (config_path.parent / share_root).resolve()
-
-
-def load_share_module(share_root: Path, module_name: str):
-    module_path = share_root / f"{module_name}.py"
-    if not module_path.exists():
-        raise SystemExit(f"Shared module not found: {module_path}")
-    spec = importlib.util.spec_from_file_location(f"_nn_share_ranked_{module_name}", module_path)
-    if spec is None or spec.loader is None:
-        raise SystemExit(f"Could not load shared module: {module_path}")
-    module = importlib.util.module_from_spec(spec)
-    sys.modules[spec.name] = module
-    spec.loader.exec_module(module)
-    return module
-
-
-def initialize_shared_modules(config_path: Path, config: dict) -> Path:
-    global clean_csv, resolve_input_csv, copy_selected_deepmd_sets
-    share_root = resolve_share_root(config_path, config)
-    clean_module = load_share_module(share_root, "clean_vdw_csv")
-    dir_selected_module = load_share_module(share_root, "dir_selected")
-    clean_csv = clean_module.clean_csv
-    resolve_input_csv = clean_module.resolve_input_csv
-    copy_selected_deepmd_sets = dir_selected_module.copy_selected_deepmd_sets
-    return share_root
-
-
-def resolve_input_paths(root: Path, config: dict, args: argparse.Namespace) -> tuple[Path, Path | None]:
-    input_cfg = config.get("input", {})
-    vdw_input_raw = args.vdw_input or str(input_cfg.get("vdw_scores", ""))
-    if not vdw_input_raw:
-        raise SystemExit("No vdW input configured. Set input.vdw_scores in config.yaml or pass --vdw-input.")
-    vdw_input_path = (root / vdw_input_raw).resolve()
-
-    interface_input_raw = args.interface_csv or str(input_cfg.get("bond_interface_counts", ""))
-    interface_input_path: Path | None = None
-    if interface_input_raw:
-        candidate = (root / interface_input_raw).resolve()
-        if candidate.exists():
-            interface_input_path = candidate
-
-    return vdw_input_path, interface_input_path
 
 
 def parse_float(value: str | None, default: float = 0.0) -> float:
@@ -310,10 +246,8 @@ def copy_selected_frames(selected_rows: list[dict[str, object]], output_dir: Pat
 def main() -> None:
     args = parse_args()
     root = Path(__file__).resolve().parent
-    config_path = (root / args.config).resolve()
-    config = load_config(config_path)
-    share_root = initialize_shared_modules(config_path, config)
-    vdw_input_path, interface_csv_path = resolve_input_paths(root, config, args)
+    vdw_input_path = (root / args.vdw_input).resolve()
+    interface_csv_path = (root / args.interface_csv).resolve() if args.interface_csv else Path()
     output_root = (root / args.output_root).resolve()
     selected_frames_dir = output_root / "selected_frames"
     summary_path = output_root / "summary.json"
@@ -322,7 +256,7 @@ def main() -> None:
 
     cleaned_vdw_csv = prepare_clean_vdw_csv(vdw_input_path)
     records = load_vdw_records(cleaned_vdw_csv)
-    interface_rows = load_interface_rows(interface_csv_path) if interface_csv_path is not None else {}
+    interface_rows = load_interface_rows(interface_csv_path) if args.interface_csv else {}
     scored_rows = score_records(records, interface_rows)
     selected_rows = select_rows(scored_rows, args.top_k, args.min_step_gap)
 
@@ -377,10 +311,9 @@ def main() -> None:
     summary = {
         "module": "nn_uncertainty",
         "mode": "stable_enol2_ranked_selection",
-        "share_root": str(share_root),
         "vdw_input": str(vdw_input_path),
         "vdw_clean_input": str(cleaned_vdw_csv),
-        "interface_csv": str(interface_csv_path) if interface_csv_path is not None else "",
+        "interface_csv": str(interface_csv_path) if args.interface_csv else "",
         "num_records": len(records),
         "selected_count": len(selected_rows),
         "top_k": args.top_k,
