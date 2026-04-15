@@ -1,9 +1,0 @@
-frame_index,frame_label,previous_frame_label,event_type,atom_i,atom_j,symbol_i,symbol_j,pair,distance_broken,distance_formed
-2056,New folder__set_003__step_00302800,New folder__set_003__step_00302750,broken,159,961,O,C,C-O,1.382242,
-2057,New folder__set_003__step_00302850,New folder__set_003__step_00302800,formed,159,961,O,C,C-O,,1.382723
-2108,New folder__set_003__step_00305400,New folder__set_003__step_00305350,broken,159,961,O,C,C-O,1.351334,
-2109,New folder__set_003__step_00305450,New folder__set_003__step_00305400,formed,159,961,O,C,C-O,,1.312589
-2275,New folder__set_003__step_00313750,New folder__set_003__step_00313700,broken,159,961,O,C,C-O,1.309242,
-2276,New folder__set_003__step_00313800,New folder__set_003__step_00313750,formed,159,961,O,C,C-O,,1.479108
-2559,New folder__set_003__step_00327950,New folder__set_003__step_00327900,broken,159,961,O,C,C-O,1.387042,
-2560,New folder__set_003__step_00328000,New folder__set_003__step_00327950,formed,159,961,O,C,C-O,,1.177968
