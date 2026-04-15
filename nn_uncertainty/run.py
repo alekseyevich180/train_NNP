@@ -1,19 +1,18 @@
 from __future__ import annotations
 
 import csv
+import importlib.util
 import json
 import math
 import random
 import re
 import shutil
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 import numpy as np
-from dir_selected import copy_selected_deepmd_sets
-from extract_coordination_from_bond import extract_coordination_events
-from share.clean_vdw_csv import clean_csv, resolve_input_csv
 
 try:
     import yaml
@@ -32,6 +31,10 @@ except ImportError:
 
 
 EVENT_TOKEN_PATTERN = re.compile(r"\((formed|broken),[^)]*?,([A-Za-z]+-[A-Za-z]+),[^)]*\)")
+clean_csv = None
+resolve_input_csv = None
+extract_coordination_events = None
+copy_selected_deepmd_sets = None
 
 
 @dataclass(frozen=True)
@@ -65,6 +68,38 @@ else:
 
 def load_config(config_path: Path) -> dict[str, Any]:
     return yaml.safe_load(config_path.read_text(encoding="utf-8"))
+
+
+def resolve_share_root(config_path: Path, config: dict[str, Any]) -> Path:
+    runtime_cfg = config.get("runtime", {})
+    share_root = str(runtime_cfg.get("share_root", "share"))
+    return (config_path.parent / share_root).resolve()
+
+
+def load_share_module(share_root: Path, module_name: str):
+    module_path = share_root / f"{module_name}.py"
+    if not module_path.exists():
+        raise SystemExit(f"Shared module not found: {module_path}")
+    spec = importlib.util.spec_from_file_location(f"_nn_share_{module_name}", module_path)
+    if spec is None or spec.loader is None:
+        raise SystemExit(f"Could not load shared module: {module_path}")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+def initialize_shared_modules(config_path: Path, config: dict[str, Any]) -> Path:
+    global clean_csv, resolve_input_csv, extract_coordination_events, copy_selected_deepmd_sets
+    share_root = resolve_share_root(config_path, config)
+    clean_module = load_share_module(share_root, "clean_vdw_csv")
+    coordination_module = load_share_module(share_root, "extract_coordination_from_bond")
+    dir_selected_module = load_share_module(share_root, "dir_selected")
+    clean_csv = clean_module.clean_csv
+    resolve_input_csv = clean_module.resolve_input_csv
+    extract_coordination_events = coordination_module.extract_coordination_events
+    copy_selected_deepmd_sets = dir_selected_module.copy_selected_deepmd_sets
+    return share_root
 
 
 def ensure_output_dirs(root: Path, config: dict[str, Any]) -> tuple[Path, Path]:
@@ -584,7 +619,9 @@ def export_selected_deepmd_sets(selected_csv: Path, config_path: Path) -> dict[s
 
 def main() -> None:
     root = Path(__file__).resolve().parent
-    config = load_config(root / "config.yaml")
+    config_path = root / "config.yaml"
+    config = load_config(config_path)
+    share_root = initialize_shared_modules(config_path, config)
     output_root, selected_dir = ensure_output_dirs(root, config)
     summary_path = output_root / config["output"]["summary_json"]
 
@@ -595,6 +632,7 @@ def main() -> None:
                 "module": "nn_uncertainty",
                 "role": "neural_network_structure_selector",
                 "status": "missing_dependency",
+                "share_root": str(share_root),
                 "message": "PyTorch is required to train the selector model.",
             },
         )
@@ -609,6 +647,7 @@ def main() -> None:
                 "module": "nn_uncertainty",
                 "role": "neural_network_structure_selector",
                 "status": "missing_input",
+                "share_root": str(share_root),
                 "bond_events_input": str(bond_csv_path),
                 "message": "bond_events.csv is required to train the selector.",
             },
@@ -646,6 +685,7 @@ def main() -> None:
                 "module": "nn_uncertainty",
                 "role": "neural_network_structure_selector",
                 "status": "insufficient_samples",
+                "share_root": str(share_root),
                 "num_samples": len(records),
                 "message": "At least two samples are required to train the selector.",
             },
@@ -662,6 +702,7 @@ def main() -> None:
                 "module": "nn_uncertainty",
                 "role": "neural_network_structure_selector",
                 "status": "missing_positive_labels",
+                "share_root": str(share_root),
                 "num_samples": len(records),
                 **label_counts,
                 "message": "No positive labels were generated from the heuristic rules.",
@@ -676,6 +717,7 @@ def main() -> None:
                 "module": "nn_uncertainty",
                 "role": "neural_network_structure_selector",
                 "status": "missing_negative_labels",
+                "share_root": str(share_root),
                 "num_samples": len(records),
                 **label_counts,
                 "message": (
@@ -711,6 +753,7 @@ def main() -> None:
         "module": "nn_uncertainty",
         "role": "neural_network_structure_selector",
         "status": "completed",
+        "share_root": str(share_root),
         "bond_events_input": str(bond_csv_path),
         "vdw_scores_input": str(raw_vdw_input_path),
         "vdw_scores_clean_input": str(prepared_vdw_csv_path) if prepared_vdw_csv_path is not None else "",

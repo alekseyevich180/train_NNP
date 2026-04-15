@@ -1,0 +1,29 @@
+{
+  "module": "nn_uncertainty",
+  "mode": "stable_enol2_ranked_selection",
+  "share_root": "C:\\Users\\yingkaiwu\\Desktop\\Active-learning\\NNP\\scripts\\nn_uncertainty\\share",
+  "vdw_input": "C:\\Users\\yingkaiwu\\Desktop\\Active-learning\\NNP\\aimd_data\\intermediates_enol2_H_dataset\\vdw\\vdw_scores_clean.csv",
+  "vdw_clean_input": "C:\\Users\\yingkaiwu\\Desktop\\Active-learning\\NNP\\aimd_data\\intermediates_enol2_H_dataset\\vdw\\vdw_scores_clean.csv",
+  "interface_csv": "",
+  "num_records": 3998,
+  "selected_count": 300,
+  "top_k": 300,
+  "min_step_gap": 500,
+  "copied_frames": 0,
+  "deepmd_export": {
+    "config_path": "C:\\Users\\yingkaiwu\\Desktop\\Active-learning\\NNP\\scripts\\nn_uncertainty\\config.yaml",
+    "selected_csv": "C:\\Users\\yingkaiwu\\Desktop\\Active-learning\\NNP\\scripts\\nn_uncertainty\\outputs_enol2_ranked\\selected_structures.csv",
+    "source_deepmd": "C:\\Users\\yingkaiwu\\Desktop\\Active-learning\\NNP\\aimd_data\\intermediates_enol2_H_dataset\\deepmd_dataset",
+    "output_dir": "C:\\Users\\yingkaiwu\\Desktop\\Active-learning\\NNP\\aimd_data\\intermediates_enol2_H_dataset\\deepmd_selected_from_enol2_ranked",
+    "summary_csv": "C:\\Users\\yingkaiwu\\Desktop\\Active-learning\\NNP\\aimd_data\\intermediates_enol2_H_dataset\\deepmd_selected_from_enol2_ranked\\copied_sets_summary.csv",
+    "copied": 300,
+    "missing": 0,
+    "skipped": 0
+  },
+  "score_formula": {
+    "vdw_total_score_rank": 0.5,
+    "surface_intermediate_score_rank": 0.2,
+    "water_dissociated_intermediate_score_rank": 0.15,
+    "interface_total_rank": 0.15
+  }
+}

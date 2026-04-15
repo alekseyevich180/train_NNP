@@ -1,3 +1,6 @@
+runtime:
+  share_root: "share"
+
 input:
   vdw_scores: "../../aimd_data/intermediates_enol2_H_dataset/vdw/vdw_scores_clean.csv" 
   bond_events: "../bond_change_detection/outputs_enol2_H/bond_events.csv"
