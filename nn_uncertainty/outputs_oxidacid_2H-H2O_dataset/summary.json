@@ -1,0 +1,19 @@
+{
+  "module": "nn_uncertainty",
+  "mode": "stable_enol2_ranked_selection",
+  "vdw_input": "C:\\Users\\yingkaiwu\\Desktop\\Active-learning\\NNP\\aimd_data\\intermediates_enol_oxidacid_2H-H2O_dataset\\vdw",
+  "vdw_clean_input": "C:\\Users\\yingkaiwu\\Desktop\\Active-learning\\NNP\\aimd_data\\intermediates_enol_oxidacid_2H-H2O_dataset\\vdw\\vdw_scores_clean.csv",
+  "interface_csv": "",
+  "num_records": 3996,
+  "selected_count": 300,
+  "top_k": 300,
+  "min_step_gap": 500,
+  "copied_frames": 0,
+  "deepmd_export": {},
+  "score_formula": {
+    "vdw_total_score_rank": 0.5,
+    "surface_intermediate_score_rank": 0.2,
+    "water_dissociated_intermediate_score_rank": 0.15,
+    "interface_total_rank": 0.15
+  }
+}

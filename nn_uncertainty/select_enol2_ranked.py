@@ -5,11 +5,17 @@ import csv
 import json
 import re
 import shutil
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 
+ROOT = Path(__file__).resolve().parent
+SCRIPTS_ROOT = ROOT.parent
+if str(SCRIPTS_ROOT) not in sys.path:
+    sys.path.insert(0, str(SCRIPTS_ROOT))
+
 from nn_uncertainty.share.dir_selected import copy_selected_deepmd_sets
-from share.clean_vdw_csv import clean_csv, resolve_input_csv
+from nn_uncertainty.share.clean_vdw_csv import clean_csv, resolve_input_csv
 
 
 STEP_PATTERN = re.compile(r"step_(\d+)")
@@ -33,7 +39,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--vdw-input",
-        default="../aimd_data/intermediates_enol2_H_dataset/vdw",
+        default="../../aimd_data/intermediates_enol_oxidacid_2H-H2O_dataset/vdw",
         help="Path to a vdW CSV file or vdW directory.",
     )
     parser.add_argument(
@@ -43,7 +49,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--output-root",
-        default="outputs_enol2_ranked",
+        default="outputs_oxidacid_2H-H2O_dataset",
         help="Output directory relative to nn_uncertainty.",
     )
     parser.add_argument(
