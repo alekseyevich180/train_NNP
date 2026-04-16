@@ -1,3 +1,4 @@
+#batch python select_enol2_ranked.py --copy-deepmd#
 from __future__ import annotations
 
 import argparse
