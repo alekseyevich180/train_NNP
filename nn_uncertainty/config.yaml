@@ -2,10 +2,10 @@ runtime:
   share_root: "share"
 
 input:
-  vdw_scores: "../../aimd_data/intermediates_enol_oxidacid_2H-H2O_dataset/vdw/vdw_scores_clean.csv" 
-  bond_events: "../bond_change_detection/outputs_oxidacid/bond_events.csv"
-  bond_interface_counts: "../bond_change_detection/outputs_oxidacid/bond_interface_counts.csv"
-  coordination_events: "../zn_o_coordination/outputs_oxidacid/coordination_events.csv"
+  vdw_scores: "../../aimd_data/intermediates_ketone_dataset/vdw/vdw_scores_clean.csv" 
+  bond_events: "../bond_change_detection/outputs_ketone/bond_events.csv"
+  bond_interface_counts: "../bond_change_detection/outputs_ketone/bond_interface_counts.csv"
+  coordination_events: "../zn_o_coordination/outputs_ketone/coordination_events.csv"
 
 labels:
   mode: "heuristic"
