@@ -9,7 +9,16 @@
   "top_k": 300,
   "min_step_gap": 500,
   "copied_frames": 0,
-  "deepmd_export": {},
+  "deepmd_export": {
+    "config_path": "C:\\Users\\yingkaiwu\\Desktop\\Active-learning\\NNP\\scripts\\nn_uncertainty\\config.yaml",
+    "selected_csv": "C:\\Users\\yingkaiwu\\Desktop\\Active-learning\\NNP\\scripts\\nn_uncertainty\\outputs_oxidacid_2H-H2O_dataset\\selected_structures.csv",
+    "source_deepmd": "C:\\Users\\yingkaiwu\\Desktop\\Active-learning\\NNP\\aimd_data\\intermediates_enol_oxidacid_2H-H2O_dataset\\deepmd_dataset",
+    "output_dir": "C:\\Users\\yingkaiwu\\Desktop\\Active-learning\\NNP\\aimd_data\\intermediates_enol_oxidacid_2H-H2O_dataset\\deepmd_selected_from_nnp",
+    "summary_csv": "C:\\Users\\yingkaiwu\\Desktop\\Active-learning\\NNP\\aimd_data\\intermediates_enol_oxidacid_2H-H2O_dataset\\deepmd_selected_from_nnp\\copied_sets_summary.csv",
+    "copied": 300,
+    "missing": 0,
+    "skipped": 0
+  },
   "score_formula": {
     "vdw_total_score_rank": 0.5,
     "surface_intermediate_score_rank": 0.2,

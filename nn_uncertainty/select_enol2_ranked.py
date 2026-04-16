@@ -237,16 +237,44 @@ def write_csv(path: Path, rows: list[dict[str, object]], fieldnames: list[str]) 
         writer.writerows(rows)
 
 
-def copy_selected_frames(selected_rows: list[dict[str, object]], output_dir: Path) -> int:
+def resolve_structure_path(structure_path: str, root: Path) -> Path:
+    source = Path(structure_path)
+    if source.exists():
+        return source
+
+    normalized = structure_path.replace("\\", "/")
+    marker = "/cif_frames/"
+    if marker in normalized:
+        prefix, suffix = normalized.split(marker, 1)
+        dataset_name = Path(prefix).name
+        candidate = (root.parent.parent / "aimd_data" / dataset_name / "cif_frames" / suffix).resolve()
+        if candidate.exists():
+            return candidate
+
+    return source
+
+
+def copy_selected_frames(selected_rows: list[dict[str, object]], output_dir: Path, root: Path) -> int:
     output_dir.mkdir(parents=True, exist_ok=True)
     copied = 0
     for row in selected_rows:
-        source = Path(str(row["structure_path"]))
+        source = resolve_structure_path(str(row["structure_path"]), root)
         if not source.exists():
             continue
         shutil.copy2(source, output_dir / source.name)
         copied += 1
     return copied
+
+
+def export_selected_deepmd_sets(selected_csv: Path, config_path: Path) -> dict[str, object] | None:
+    if not selected_csv.exists() or not config_path.exists():
+        return None
+    return copy_selected_deepmd_sets(
+        selected_csv=selected_csv,
+        config_path=config_path,
+        copy_type_files_flag=True,
+        overwrite=False,
+    )
 
 
 def main() -> None:
@@ -301,18 +329,11 @@ def main() -> None:
         ],
     )
 
-    copied_frames = copy_selected_frames(selected_rows, selected_frames_dir) if args.copy_frames else 0
+    copied_frames = copy_selected_frames(selected_rows, selected_frames_dir, root) if args.copy_frames else 0
 
     deepmd_export: dict[str, object] = {}
     if args.copy_deepmd:
-        deepmd_export = copy_selected_deepmd_sets(
-            selected_csv=selected_csv,
-            config_path=root / "config.yaml",
-            source_deepmd=(vdw_input_path.parent.parent / "deepmd_dataset").resolve(),
-            output_dir=(vdw_input_path.parent.parent / "deepmd_selected_from_enol2_ranked").resolve(),
-            copy_type_files_flag=True,
-            overwrite=False,
-        )
+        deepmd_export = export_selected_deepmd_sets(selected_csv, root / "config.yaml") or {}
 
     summary = {
         "module": "nn_uncertainty",
