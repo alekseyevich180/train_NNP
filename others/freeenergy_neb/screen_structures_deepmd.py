@@ -20,6 +20,8 @@ from pfp_api_client.pfp.estimator import Estimator
 
 @dataclass(frozen=True)
 class ScreenConfig:
+    input_files: tuple[str, ...] = ("ketone.cif",)
+    input_glob: str = "*.cif"
     calc_mode: str = "CRYSTAL"
     fix_bottom: bool = True
     fix_z_max: float = 1.0
@@ -83,9 +85,21 @@ def parse_args() -> argparse.Namespace:
         )
     )
     parser.add_argument(
+        "--input-files",
+        nargs="+",
+        default=list(CONFIG.input_files),
+        help=(
+            "Explicit CIF filenames in the current directory. "
+            "Example: --input-files a.cif b.cif c.cif"
+        ),
+    )
+    parser.add_argument(
         "--input-glob",
-        default="*.cif",
-        help="Glob pattern for input structures in the current directory. Default: *.cif",
+        default=CONFIG.input_glob,
+        help=(
+            "Glob pattern for input structures in the current directory. "
+            "Ignored when --input-files is provided. Default: *.cif"
+        ),
     )
     parser.add_argument(
         "--output-root",
@@ -134,6 +148,21 @@ def parse_args() -> argparse.Namespace:
 
 def expected_sample_count(aimd_steps: int, sample_interval: int) -> int:
     return aimd_steps // sample_interval
+
+
+def resolve_input_paths(cwd: Path, args: argparse.Namespace) -> list[Path]:
+    if args.input_files:
+        input_paths = []
+        for name in args.input_files:
+            path = (cwd / name).resolve()
+            if not path.exists():
+                raise SystemExit(f"Input structure not found: {path}")
+            if not path.is_file():
+                raise SystemExit(f"Input path is not a file: {path}")
+            input_paths.append(path)
+        return sorted(input_paths)
+
+    return sorted(path for path in cwd.glob(args.input_glob) if path.is_file() and path.parent == cwd)
 
 
 def load_structure(path: Path) -> Atoms:
@@ -310,10 +339,10 @@ def main() -> None:
     args = parse_args()
     cwd = Path.cwd()
     output_root = cwd / args.output_root
-    input_paths = sorted(path for path in cwd.glob(args.input_glob) if path.is_file() and path.parent == cwd)
+    input_paths = resolve_input_paths(cwd, args)
 
     if not input_paths:
-        raise SystemExit(f"No input structures found in {cwd} with pattern {args.input_glob}")
+        raise SystemExit(f"No input structures found in {cwd}")
 
     projected_samples = expected_sample_count(args.aimd_steps, args.sample_interval)
     if projected_samples < args.min_samples:
