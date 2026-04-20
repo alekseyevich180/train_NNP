@@ -1,0 +1,85 @@
+{
+  "model": {
+    "type_map": ["C", "H", "O", "Zn"],
+
+    "descriptor": {
+      "type": "se_e2_a",
+      "rcut": 6.0,
+      "rcut_smth": 0.5,
+      "sel": "auto:1.2",
+      "neuron": [25, 50, 100],
+      "axis_neuron": 8,
+      "activation_function": "tanh",
+      "resnet_dt": false,
+      "seed": 1
+    },
+
+    "fitting_net": {
+      "type": "ener",
+      "neuron": [240, 240, 240],
+      "activation_function": "tanh",
+      "resnet_dt": true,
+      "precision": "default",
+      "seed": 1
+    }
+  },
+
+  "learning_rate": {
+    "type": "exp",
+    "start_lr": 0.001,
+    "stop_lr": 1e-8,
+    "decay_steps": 20000
+  },
+
+  "loss": {
+    "type": "ener",
+    "start_pref_e": 0.02,
+    "limit_pref_e": 1.0,
+    "start_pref_f": 1000.0,
+    "limit_pref_f": 1.0,
+    "start_pref_v": 0.0,
+    "limit_pref_v": 0.0
+  },
+
+  "training": {
+    "training_data": {
+      "systems": [
+        "/home/pj24001724/ku40000345/wu/deepmd_train/nnp_train/1/train",
+        "/home/pj24001724/ku40000345/wu/deepmd_train/nnp_train/2/train",
+        "/home/pj24001724/ku40000345/wu/deepmd_train/nnp_train/acid1_relaxed/train",
+        "/home/pj24001724/ku40000345/wu/deepmd_train/nnp_train/acid2_relaxed/train",
+        "/home/pj24001724/ku40000345/wu/deepmd_train/nnp_train/acid3_relaxed/train",
+        "/home/pj24001724/ku40000345/wu/deepmd_train/nnp_train/NEB1/train",
+        "/home/pj24001724/ku40000345/wu/deepmd_train/nnp_train/NEB2/train",
+        "/home/pj24001724/ku40000345/wu/deepmd_train/nnp_train/NEB3/train",
+        "/home/pj24001724/ku40000345/wu/deepmd_train/nnp_train/NEB4/train"
+      ],
+      "set_prefix": "set",
+      "batch_size": 2,
+      "auto_prob": "prob_sys_size; 0:2:0.2; 2:6:0.6; 6:10:0.2"
+    },
+
+    "validation_data": {
+      "systems": [
+        "/home/pj24001724/ku40000345/wu/deepmd_train/nnp_train/1/val",
+        "/home/pj24001724/ku40000345/wu/deepmd_train/nnp_train/2/val",
+        "/home/pj24001724/ku40000345/wu/deepmd_train/nnp_train/acid1_relaxed/val",
+        "/home/pj24001724/ku40000345/wu/deepmd_train/nnp_train/acid2_relaxed/val",
+        "/home/pj24001724/ku40000345/wu/deepmd_train/nnp_train/acid3_relaxed/val",
+        "/home/pj24001724/ku40000345/wu/deepmd_train/nnp_train/NEB1/val",
+        "/home/pj24001724/ku40000345/wu/deepmd_train/nnp_train/NEB2/val",
+        "/home/pj24001724/ku40000345/wu/deepmd_train/nnp_train/NEB3/val",
+        "/home/pj24001724/ku40000345/wu/deepmd_train/nnp_train/NEB4/val"
+      ],
+      "set_prefix": "set",
+      "batch_size": 2,
+      "numb_batch": 3
+    },
+
+    "numb_steps": 500000,
+    "seed": 1,
+    "disp_file": "lcurve.out",
+    "disp_freq": 100,
+    "save_freq": 1000
+  }
+}
