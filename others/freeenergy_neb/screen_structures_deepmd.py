@@ -4,6 +4,7 @@ import argparse
 import csv
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Sequence
 
 import numpy as np
 import pandas as pd
@@ -77,7 +78,31 @@ class DeepMDWriter:
         np.save(set_dir / "box.npy", np.array([atoms.get_cell().array.reshape(-1)]))
 
 
-def parse_args() -> argparse.Namespace:
+def _normalize_input_names(input_names: Sequence[str] | None) -> list[str]:
+    if not input_names:
+        return []
+
+    normalized: list[str] = []
+    for raw_name in input_names:
+        if raw_name is None:
+            continue
+
+        name = str(raw_name).strip()
+        if not name:
+            continue
+
+        # Notebook calls sometimes pass a single stringified list or include newline-only tokens.
+        if name.startswith("[") and name.endswith("]"):
+            name = name[1:-1].strip().strip("'\"")
+        if not name:
+            continue
+
+        normalized.append(name)
+
+    return normalized
+
+
+def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
             "Relax CIF structures in the current folder, run short AIMD sampling, "
@@ -142,7 +167,8 @@ def parse_args() -> argparse.Namespace:
         default=CONFIG.min_samples,
         help="Required minimum number of sampled AIMD frames per structure.",
     )
-    args, _unknown = parser.parse_known_args()
+    args, _unknown = parser.parse_known_args(argv)
+    args.input_files = _normalize_input_names(args.input_files)
     return args
 
 
@@ -154,11 +180,19 @@ def resolve_input_paths(cwd: Path, args: argparse.Namespace) -> list[Path]:
     if args.input_files:
         input_paths = []
         for name in args.input_files:
+            if any(char in name for char in "\r\n\t"):
+                raise ValueError(
+                    "Input filename contains control characters. "
+                    f"Received {name!r}. In Jupyter, pass --input-files as separate filenames."
+                )
             path = (cwd / name).resolve()
             if not path.exists():
-                raise SystemExit(f"Input structure not found: {path}")
+                raise ValueError(
+                    "Input structure not found: "
+                    f"{path}. Received input_files={args.input_files!r}"
+                )
             if not path.is_file():
-                raise SystemExit(f"Input path is not a file: {path}")
+                raise ValueError(f"Input path is not a file: {path}")
             input_paths.append(path)
         return sorted(input_paths)
 
@@ -335,8 +369,8 @@ def screen_structure(input_path: Path, config: ScreenConfig, output_root: Path) 
     }
 
 
-def main() -> None:
-    args = parse_args()
+def main(argv: Sequence[str] | None = None) -> None:
+    args = parse_args(argv)
     cwd = Path.cwd()
     output_root = cwd / args.output_root
     input_paths = resolve_input_paths(cwd, args)
