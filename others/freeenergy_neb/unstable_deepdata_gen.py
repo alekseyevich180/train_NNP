@@ -252,7 +252,11 @@ def _record_frame(atoms: Atoms, config: ScreenConfig, sampled_dir: Path, step: i
     }
 
 
-def run_relaxation_presampling(atoms: Atoms, config: ScreenConfig, sampled_dir: Path) -> pd.DataFrame:
+def run_relaxation_presampling(
+    atoms: Atoms,
+    config: ScreenConfig,
+    sampled_dir: Path,
+) -> tuple[pd.DataFrame, dict[int, Atoms]]:
     sampled_dir.mkdir(parents=True, exist_ok=True)
 
     work_atoms = atoms.copy()
@@ -283,12 +287,13 @@ def run_relaxation_presampling(atoms: Atoms, config: ScreenConfig, sampled_dir: 
         ]
     )
     trajectory_df.to_csv(sampled_dir / "relaxation_sampling.csv", index=False)
-    trajectory_df.attrs["frames"] = rows
-    return trajectory_df
+    frames_by_step = {int(row["step"]): row["frame"] for row in rows}
+    return trajectory_df, frames_by_step
 
 
 def select_stable_frames(
     trajectory_df: pd.DataFrame,
+    frames_by_step: dict[int, Atoms],
     config: ScreenConfig,
     optimized_dir: Path,
 ) -> tuple[list[Atoms], pd.DataFrame]:
@@ -296,8 +301,7 @@ def select_stable_frames(
         raise ValueError("No relaxation frames were recorded.")
 
     optimized_dir.mkdir(parents=True, exist_ok=True)
-    frames: list[dict[str, object]] = trajectory_df.attrs.get("frames", [])
-    if not frames:
+    if not frames_by_step:
         raise ValueError("Relaxation frame metadata is missing.")
 
     candidate_df = trajectory_df[trajectory_df["step"] >= config.stable_window_start].copy()
@@ -306,9 +310,12 @@ def select_stable_frames(
 
     candidate_df = candidate_df.sort_values(["max_force_eVA", "energy_eV", "step"]).reset_index(drop=True)
     keep_count = min(config.selected_frames, len(candidate_df))
+    if keep_count == 0:
+        raise ValueError("No candidate frames available for stable-frame selection.")
     if keep_count < config.min_samples:
-        raise ValueError(
-            f"Only {keep_count} candidate frames available, below min_samples={config.min_samples}."
+        print(
+            "Warning: fewer candidate frames available than requested. "
+            f"Using {keep_count} frames instead of min_samples={config.min_samples}."
         )
 
     if keep_count < len(candidate_df):
@@ -318,7 +325,6 @@ def select_stable_frames(
         selected_df = candidate_df.copy()
 
     selected_df = selected_df.sort_values("step").reset_index(drop=True)
-    frames_by_step = {int(row["step"]): row["frame"] for row in frames}
 
     selected_atoms: list[Atoms] = []
     selected_rows: list[dict[str, object]] = []
@@ -376,18 +382,24 @@ def screen_structure(input_path: Path, config: ScreenConfig, output_root: Path) 
     atoms = load_structure(input_path)
     initial_energy = compute_energy(atoms.copy(), config)
 
-    relaxed = relax_structure(
-        atoms,
-        config,
-        trajectory_path=relaxed_dir / f"{structure_name}_relax.traj",
-    )
-    relaxed_energy = float(relaxed.get_potential_energy())
-    relaxed_path = relaxed_dir / f"{structure_name}_relaxed.cif"
-    write(str(relaxed_path), relaxed)
+    initial_path = relaxed_dir / f"{structure_name}_initial.cif"
+    write(str(initial_path), atoms)
 
-    trajectory_df = run_relaxation_presampling(relaxed, config, sampled_dir)
-    selected_atoms, selected_summary = select_stable_frames(trajectory_df, config, optimized_dir)
+    trajectory_df, frames_by_step = run_relaxation_presampling(atoms, config, sampled_dir)
+    selected_atoms, selected_summary = select_stable_frames(
+        trajectory_df,
+        frames_by_step,
+        config,
+        optimized_dir,
+    )
     export_deepmd_frames(selected_atoms, deepmd_dir)
+
+    min_energy_idx = trajectory_df["energy_eV"].idxmin()
+    relaxed_step = int(trajectory_df.loc[min_energy_idx, "step"])
+    relaxed_atoms = frames_by_step[relaxed_step].copy()
+    relaxed_energy = float(trajectory_df.loc[min_energy_idx, "energy_eV"])
+    relaxed_path = relaxed_dir / f"{structure_name}_relaxed_step_{relaxed_step:04d}.cif"
+    write(str(relaxed_path), relaxed_atoms)
 
     best_row = selected_summary.loc[selected_summary["post_energy_eV"].idxmin()]
     best_atoms = selected_atoms[int(best_row["selected_index"])].copy()
@@ -423,17 +435,17 @@ def main(argv: Sequence[str] | None = None) -> None:
 
     recorded_frames = expected_recorded_frame_count(args.trajectory_steps)
     projected_samples = min(args.selected_frames, max(0, recorded_frames - args.stable_window_start))
-    if projected_samples < args.min_samples:
+    if projected_samples <= 0:
         raise SystemExit(
             "Sampling setup is too small: "
             f"trajectory_steps={args.trajectory_steps}, stable_window_start={args.stable_window_start}, "
-            f"selected_frames={args.selected_frames}, expected_samples={projected_samples}, "
-            f"required_min_samples={args.min_samples}. Increase --trajectory-steps or lower --min-samples."
+            f"selected_frames={args.selected_frames}, expected_samples={projected_samples}. "
+            "Increase --trajectory-steps or lower --stable-window-start."
         )
 
     print(
         f"Sampling plan: {recorded_frames} recorded relaxation frames, "
-        f"{projected_samples} selected frames per structure "
+        f"up to {projected_samples} selected frames per structure "
         f"(stable_window_start={args.stable_window_start})"
     )
 
