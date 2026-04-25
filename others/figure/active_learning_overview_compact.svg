@@ -1,0 +1,65 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="508" height="471" viewBox="0 0 508 471">
+  <defs>
+    <style>
+      .box{fill:#fff;stroke:#222;stroke-width:1.4}
+      .diamond{fill:#fff;stroke:#222;stroke-width:1.4}
+      .title{font:700 15px "Times New Roman",serif;fill:#111}
+      .txt{font:600 13px "Times New Roman",serif;fill:#111}
+      .note{font:700 12px Arial,sans-serif;fill:#0b3a84}
+      .sub{font-size:9px;baseline-shift:sub}
+      .arrow{stroke:#111;stroke-width:1.7;fill:none;marker-end:url(#arrow)}
+      .thin{stroke:#111;stroke-width:1.4;fill:none;marker-end:url(#arrow)}
+    </style>
+    <marker id="arrow" markerWidth="9" markerHeight="9" refX="7.5" refY="4.5" orient="auto">
+      <path d="M1,1 L8,4.5 L1,8 Z" fill="#111"/>
+    </marker>
+  </defs>
+  <rect width="508" height="471" fill="#fff"/>
+
+  <rect x="18" y="18" width="155" height="58" class="box"/>
+  <text x="95.5" y="43" text-anchor="middle" class="title">AIMD trajectories</text>
+  <text x="95.5" y="64" text-anchor="middle" class="txt">ZnO surface system</text>
+
+  <rect x="335" y="18" width="155" height="58" class="box"/>
+  <text x="412.5" y="43" text-anchor="middle" class="title">Sampled structures</text>
+  <text x="412.5" y="64" text-anchor="middle" class="txt">C9 ketone / H<tspan class="sub">2</tspan>O / O<tspan class="sub">2</tspan></text>
+  <path class="arrow" d="M173 47 L335 47"/>
+
+  <polygon points="96,122 174,160 96,198 18,160" class="diamond"/>
+  <text x="96" y="154" text-anchor="middle" class="title">Reactive frame</text>
+  <text x="96" y="174" text-anchor="middle" class="txt">screening</text>
+  <path class="arrow" d="M96 76 L96 122"/>
+
+  <rect x="328" y="126" width="166" height="68" class="box"/>
+  <text x="411" y="154" text-anchor="middle" class="title">Chemical event</text>
+  <text x="411" y="174" text-anchor="middle" class="txt">bond / Zn-O changes</text>
+  <path class="arrow" d="M412 76 L412 126"/>
+  <path class="arrow" d="M174 160 L328 160"/>
+
+  <polygon points="96,244 174,282 96,320 18,282" class="diamond"/>
+  <text x="96" y="276" text-anchor="middle" class="title">Structure</text>
+  <text x="96" y="296" text-anchor="middle" class="txt">ranking</text>
+  <path class="arrow" d="M96 198 L96 244"/>
+
+  <polygon points="411,224 499,269 411,314 323,269" class="diamond"/>
+  <text x="411" y="258" text-anchor="middle" class="title">Feature scoring</text>
+  <text x="411" y="278" text-anchor="middle" class="txt">SOAP + vdW</text>
+  <path class="arrow" d="M411 194 L411 224"/>
+  <path class="arrow" d="M174 282 L323 269"/>
+
+  <rect x="328" y="350" width="166" height="58" class="box"/>
+  <text x="411" y="375" text-anchor="middle" class="title">MLP selector</text>
+  <text x="411" y="396" text-anchor="middle" class="txt">high-value candidates</text>
+  <path class="arrow" d="M411 314 L411 350"/>
+
+  <rect x="156" y="411" width="196" height="45" class="box"/>
+  <text x="254" y="431" text-anchor="middle" class="title">Final NNP dataset</text>
+  <text x="254" y="449" text-anchor="middle" class="txt">train / validation / test</text>
+
+  <path class="arrow" d="M411 408 L411 433 L352 433"/>
+  <path class="arrow" d="M96 320 L96 433 L156 433"/>
+
+  <rect x="186" y="96" width="142" height="45" fill="#fff"/>
+  <text x="257" y="115" text-anchor="middle" class="note">Active-learning loop</text>
+  <text x="257" y="135" text-anchor="middle" class="note">key-structure selection</text>
+</svg>
