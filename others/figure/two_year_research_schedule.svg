@@ -1,0 +1,51 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1060" height="310" viewBox="0 0 1060 310">
+  <defs>
+    <style>
+      .grid{fill:#fff;stroke:#1c1c1c;stroke-width:1.5}
+      .bar{fill:#5b9bd5;stroke:#3d78ae;stroke-width:1}
+      .year{font:700 30px "Times New Roman","SimSun",serif;fill:#111}
+      .task{font:700 21px "Times New Roman","SimSun",serif;fill:#111}
+      .small{font:600 15px Arial,Helvetica,sans-serif;fill:#333}
+    </style>
+  </defs>
+  <rect width="1060" height="310" fill="#fff"/>
+
+  <!-- table geometry: label width 520, eight half-year/quarter cells of width 67.5 -->
+  <g transform="translate(2,3)">
+    <rect x="0" y="0" width="1056" height="304" class="grid"/>
+    <line x1="550" y1="0" x2="550" y2="304" stroke="#1c1c1c" stroke-width="1.5"/>
+    <line x1="798" y1="0" x2="798" y2="304" stroke="#1c1c1c" stroke-width="1.5"/>
+    <line x1="0" y1="46" x2="1056" y2="46" stroke="#1c1c1c" stroke-width="1.5"/>
+    <line x1="0" y1="98" x2="1056" y2="98" stroke="#1c1c1c" stroke-width="1.5"/>
+    <line x1="0" y1="150" x2="1056" y2="150" stroke="#1c1c1c" stroke-width="1.5"/>
+    <line x1="0" y1="202" x2="1056" y2="202" stroke="#1c1c1c" stroke-width="1.5"/>
+    <line x1="0" y1="254" x2="1056" y2="254" stroke="#1c1c1c" stroke-width="1.5"/>
+
+    <!-- inner time grid -->
+    <g stroke="#1c1c1c" stroke-width="1.5">
+      <line x1="612" y1="46" x2="612" y2="304"/>
+      <line x1="674" y1="46" x2="674" y2="304"/>
+      <line x1="736" y1="46" x2="736" y2="304"/>
+      <line x1="860" y1="46" x2="860" y2="304"/>
+      <line x1="922" y1="46" x2="922" y2="304"/>
+      <line x1="984" y1="46" x2="984" y2="304"/>
+    </g>
+
+    <text x="674" y="30" text-anchor="middle" class="year">Year 1</text>
+    <text x="922" y="30" text-anchor="middle" class="year">Year 2</text>
+
+    <!-- blue schedule blocks -->
+    <rect x="550" y="47" width="124" height="50" class="bar"/>
+    <rect x="612" y="99" width="186" height="50" class="bar"/>
+    <rect x="674" y="151" width="248" height="50" class="bar"/>
+    <rect x="860" y="203" width="124" height="50" class="bar"/>
+    <rect x="922" y="255" width="134" height="48" class="bar"/>
+
+    <!-- task labels -->
+    <text x="14" y="78" class="task">AIMD trajectory generation and structure sampling</text>
+    <text x="14" y="130" class="task">Chemical event detection and structure screening</text>
+    <text x="14" y="182" class="task">Feature scoring using SOAP descriptors and vdW cues</text>
+    <text x="14" y="234" class="task">MLP-based high-value structure selection</text>
+    <text x="14" y="286" class="task">Final NNP dataset assembly and potential training</text>
+  </g>
+</svg>
