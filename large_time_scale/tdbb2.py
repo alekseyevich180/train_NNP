@@ -14,7 +14,7 @@ from pfp_api_client.pfp.calculators.ase_calculator import ASECalculator
 
 CONFIG={
 "system":{
-"input_file":"acid.cif",
+"input_file":"ketone.cif",
 "fixed_z_lower_bound":4.0,
 "fixed_z_upper_bound":9.0,
 "surface_relax_depth":12.0,
