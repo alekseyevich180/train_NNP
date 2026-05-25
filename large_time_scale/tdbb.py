@@ -36,7 +36,7 @@ CONFIG = {
         "reactive_pairs": "0-10",
         "reactive_symbols": "C-O",
         "pair_cutoff_ang": 4.0,
-        "template_dir": "large_time_scale/interm",
+        "template_dir": "interm",
         "template_bond_symbols": "C-O,C=C,C-C",
         "template_bond_cutoff_ang": 2.2,
         "template_c_c_double_range_ang": (1.15, 1.45),
@@ -76,7 +76,7 @@ CONFIG = {
         "default_target": 1.5,
     },
     "output": {
-        "save_interval": 50,
+        "save_interval": 100,
         "deepmd_dir": "deepmd_dataset",
         "cif_dir": "cif_frames",
         "restart_dir": "restart_checkpoints",
@@ -86,6 +86,42 @@ CONFIG = {
         "template_progress": "template_progress.csv",
     },
 }
+
+
+def path_candidates(path: Path) -> list[Path]:
+    if path.is_absolute():
+        return [path]
+
+    candidates = [Path.cwd() / path]
+    if "__file__" in globals():
+        script_dir = Path(__file__).resolve().parent
+        candidates.extend([script_dir / path, script_dir.parent / path])
+    candidates.append(Path.cwd() / "large_time_scale" / path)
+
+    unique: list[Path] = []
+    seen: set[Path] = set()
+    for candidate in candidates:
+        resolved = candidate.resolve(strict=False)
+        if resolved not in seen:
+            seen.add(resolved)
+            unique.append(candidate)
+    return unique
+
+
+def resolve_existing_path(path_text: str | Path, label: str) -> Path:
+    path = Path(path_text)
+    for candidate in path_candidates(path):
+        if candidate.exists():
+            return candidate
+    checked = "\n".join(str(candidate) for candidate in path_candidates(path))
+    raise FileNotFoundError(f"{label} not found: {path}\nChecked:\n{checked}")
+
+
+def resolve_output_path(path_text: str | Path) -> Path:
+    path = Path(path_text)
+    if path.is_absolute():
+        return path
+    return Path.cwd() / path
 
 
 @dataclass(frozen=True)
@@ -350,11 +386,11 @@ def save_restart(atoms: Atoms, restart_root: Path, step_id: int, target_temperat
 
 
 def load_restart(restart_from: str, calculator: Calculator) -> tuple[Atoms, dict[str, object]]:
-    restart_path = Path(restart_from)
+    restart_path = resolve_existing_path(restart_from, "Restart path")
     if restart_path.is_dir():
         checkpoint_dir = restart_path
     else:
-        checkpoint_dir = Path(restart_path.read_text().strip())
+        checkpoint_dir = resolve_existing_path(restart_path.read_text().strip(), "Checkpoint path")
 
     atoms = read(checkpoint_dir / "atoms.traj")
     with (checkpoint_dir / "state.json").open() as file:
@@ -676,8 +712,7 @@ def make_functional_c_c_and_c_o_pairs(atoms: Atoms, args: argparse.Namespace) ->
 
 
 def list_template_files(template_dir: Path) -> list[Path]:
-    if not template_dir.exists():
-        raise FileNotFoundError(f"Template directory not found: {template_dir}")
+    template_dir = resolve_existing_path(template_dir, "Template directory")
     if not template_dir.is_dir():
         raise NotADirectoryError(f"Template path is not a directory: {template_dir}")
 
@@ -895,15 +930,16 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--target-scale", type=float, default=CONFIG["tdbb"]["target_scale"])
     parser.add_argument("--default-target", type=float, default=CONFIG["tdbb"]["default_target"])
     parser.add_argument("--calc-mode", default=CONFIG["pfp"]["calc_mode"])
-    return parser.parse_args()
+    args, unknown = parser.parse_known_args()
+    if unknown:
+        print(f"Ignoring unknown command-line arguments: {unknown}")
+    return args
 
 
 def run_simulation(args: argparse.Namespace) -> None:
-    input_path = Path(args.input)
-    if not input_path.exists():
-        raise FileNotFoundError(f"Input structure not found: {input_path}")
+    input_path = resolve_existing_path(args.input, "Input structure")
 
-    output_root = Path(args.output_root)
+    output_root = resolve_output_path(args.output_root)
     deepmd_root = output_root / CONFIG["output"]["deepmd_dir"]
     cif_root = output_root / CONFIG["output"]["cif_dir"]
     restart_root = output_root / CONFIG["output"]["restart_dir"]
