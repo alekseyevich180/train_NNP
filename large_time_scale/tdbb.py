@@ -700,10 +700,40 @@ def make_functional_c_c_pairs(atoms: Atoms, args: argparse.Namespace) -> list[tu
     return pairs
 
 
+def make_functional_c_o_pairs(atoms: Atoms, args: argparse.Namespace) -> list[tuple[int, int]]:
+    symbols = atoms.get_chemical_symbols()
+    functional_carbons = sorted(
+        find_functional_carbon_indices(
+            atoms,
+            args.functional_o_c_cutoff,
+            args.functional_c_c_shell_cutoff,
+        )
+    )
+    oxygen_indices = [i for i, symbol in enumerate(symbols) if symbol == "O"]
+    pairs: list[tuple[int, int]] = []
+
+    for c_index in functional_carbons:
+        for o_index in oxygen_indices:
+            distance = float(atoms.get_distance(c_index, o_index, mic=True))
+            if distance <= args.existing_c_o_cutoff:
+                continue
+            if distance <= args.pair_cutoff:
+                pairs.append((c_index, o_index))
+
+    if pairs:
+        print(f"Functional-near C-O candidates: {pairs}")
+    else:
+        print(
+            "Warning: no functional-near C-O candidates were found; "
+            "continuing with functional-near C-C candidates only."
+        )
+    return pairs
+
+
 def make_functional_c_c_and_c_o_pairs(atoms: Atoms, args: argparse.Namespace) -> list[tuple[int, int]]:
     pairs = []
     seen: set[tuple[int, int]] = set()
-    for pair in [*make_functional_c_c_pairs(atoms, args), *make_double_bond_c_o_pairs(atoms, args)]:
+    for pair in [*make_functional_c_c_pairs(atoms, args), *make_functional_c_o_pairs(atoms, args)]:
         ordered = tuple(sorted(pair))
         if ordered not in seen:
             seen.add(ordered)
@@ -797,6 +827,8 @@ def load_template_data(args: argparse.Namespace) -> TemplateData:
 
     print(f"Loaded template structures: {names}")
     print(f"Template target distances by bond type (A): {target_by_key}")
+    if args.template_pair_source in {"functional-cc", "functional-cc-and-co"} and "C=C" not in target_by_key:
+        raise ValueError("functional-cc template mode requires a C=C target in template_bond_symbols/interm structures.")
 
     return TemplateData(
         target_by_symbol_pair=target_by_key,
@@ -860,6 +892,8 @@ def get_reactive_pairs(atoms: Atoms, args: argparse.Namespace) -> list[tuple[int
 
 
 def get_template_source_pairs(atoms: Atoms, args: argparse.Namespace) -> list[tuple[int, int]]:
+    if args.template_pair_source in {"functional-cc", "functional-cc-and-co"}:
+        print("Template source mode forms new C=C targets from functional-near C-C candidates.")
     if args.template_pair_source == "manual":
         return parse_pairs(args.pairs)
     if args.template_pair_source == "symbols":
