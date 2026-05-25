@@ -12,6 +12,8 @@ from ase.data import vdw_radii
 from ase.io import Trajectory, read
 from ase.md import MDLogger
 from ase.md.langevin import Langevin
+from pfp_api_client.pfp.calculators.ase_calculator import ASECalculator
+from pfp_api_client.pfp.estimator import Estimator, EstimatorCalcMode
 
 
 KCAL_MOL_TO_EV = units.kcal / units.mol
@@ -164,16 +166,17 @@ def parse_pairs(pair_text: str) -> list[tuple[int, int]]:
     return pairs
 
 
-def build_pfp_calculator(model_version: str) -> Calculator:
+def parse_calc_mode(calc_mode_name: str) -> EstimatorCalcMode:
     try:
-        from pfp_api_client.ase.pfp_calculator import PFPCalculator
-    except ImportError as exc:
-        raise RuntimeError(
-            "pfp_api_client is not installed or not available in this environment. "
-            "Install/configure PFP before running production TDBB MD."
-        ) from exc
+        return EstimatorCalcMode[calc_mode_name]
+    except KeyError as exc:
+        valid_names = ", ".join(mode.name for mode in EstimatorCalcMode)
+        raise ValueError(f"Unknown calc mode '{calc_mode_name}'. Valid modes: {valid_names}") from exc
 
-    return PFPCalculator(model_version=model_version)
+
+def build_pfp_calculator(calc_mode_name: str) -> Calculator:
+    estimator = Estimator(calc_mode=parse_calc_mode(calc_mode_name))
+    return ASECalculator(estimator)
 
 
 def parse_args() -> argparse.Namespace:
@@ -195,7 +198,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--f2", type=float, default=10.0, help="TDBB range parameter in A^-2.")
     parser.add_argument("--target-scale", type=float, default=0.60, help="Target distance scale for vdW radii sum.")
     parser.add_argument("--default-target", type=float, default=1.5, help="Fallback target distance in A.")
-    parser.add_argument("--model-version", default="latest", help="PFP model version.")
+    parser.add_argument(
+        "--calc-mode",
+        default="PBE_U_PLUS_D3",
+        help="EstimatorCalcMode name, e.g. PBE_U_PLUS_D3.",
+    )
     return parser.parse_args()
 
 
@@ -215,7 +222,7 @@ def run_simulation(args: argparse.Namespace) -> None:
 
     atoms = read(input_path)
     bias = TDBBBias(atoms, pairs, params)
-    atoms.calc = BiasedCalculator(build_pfp_calculator(args.model_version), bias)
+    atoms.calc = BiasedCalculator(build_pfp_calculator(args.calc_mode), bias)
 
     dyn = Langevin(
         atoms,
@@ -237,6 +244,7 @@ def run_simulation(args: argparse.Namespace) -> None:
     print(f"Input: {input_path}")
     print(f"Reactive pairs: {pairs}")
     print(f"Target distances (A): {[round(x, 3) for x in bias.target_distances]}")
+    print(f"PFP calc mode: {args.calc_mode}")
     print(f"Steps: {args.steps}, timestep: {args.timestep_fs} fs, temperature: {args.temperature_k} K")
     print(f"Trajectory: {args.trajectory}")
     print(f"Log: {args.log}")
