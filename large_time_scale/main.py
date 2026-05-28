@@ -10,6 +10,15 @@ from ase.md.nvtberendsen import NVTBerendsen
 from ase.md.velocitydistribution import MaxwellBoltzmannDistribution
 from ase.units import fs
 
+from share.bonds import (
+    CombinedBias,
+    InterfaceBondConfig,
+    InterfaceBondStabilizer,
+    append_interface_event,
+    detect_interface_bonds,
+    parse_symbol_list,
+    write_interface_event_header,
+)
 from share.pfp import build_pfp_calculator
 from share.tdbb import (
     BiasedCalculator,
@@ -84,6 +93,21 @@ CONFIG = {
         "target_scale": 0.60,
         "default_target": 1.5,
     },
+    "interface_bonds": {
+        "enabled": True,
+        "molecule_seed_symbols": "C,H",
+        "molecule_symbols": "C,H,O,N,S",
+        "molecule_bond_symbols": "C",
+        "surface_symbols": "Zn,O",
+        "bond_cutoff_scale": 1.25,
+        "min_bond_cutoff_ang": 0.7,
+        "max_bond_cutoff_ang": 2.4,
+        "min_bonds_to_stabilize": 2,
+        "detection_interval": 10,
+        "stable_steps": 20000,
+        "restraint_k_ev_a2": 5.0,
+        "event_name": "interface_bond_events.csv",
+    },
     "output": {
         "save_interval": 100,
         "deepmd_dir": "deepmd_dataset",
@@ -136,6 +160,19 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--target-scale", type=float, default=CONFIG["tdbb"]["target_scale"])
     parser.add_argument("--default-target", type=float, default=CONFIG["tdbb"]["default_target"])
     parser.add_argument("--calc-mode", default=CONFIG["pfp"]["calc_mode"])
+    parser.add_argument("--interface-bonds", action=argparse.BooleanOptionalAction, default=CONFIG["interface_bonds"]["enabled"])
+    parser.add_argument("--molecule-seed-symbols", default=CONFIG["interface_bonds"]["molecule_seed_symbols"])
+    parser.add_argument("--molecule-symbols", default=CONFIG["interface_bonds"]["molecule_symbols"])
+    parser.add_argument("--molecule-bond-symbols", default=CONFIG["interface_bonds"]["molecule_bond_symbols"])
+    parser.add_argument("--surface-symbols", default=CONFIG["interface_bonds"]["surface_symbols"])
+    parser.add_argument("--interface-bond-cutoff-scale", type=float, default=CONFIG["interface_bonds"]["bond_cutoff_scale"])
+    parser.add_argument("--interface-min-cutoff", type=float, default=CONFIG["interface_bonds"]["min_bond_cutoff_ang"])
+    parser.add_argument("--interface-max-cutoff", type=float, default=CONFIG["interface_bonds"]["max_bond_cutoff_ang"])
+    parser.add_argument("--interface-min-bonds", type=int, default=CONFIG["interface_bonds"]["min_bonds_to_stabilize"])
+    parser.add_argument("--interface-detection-interval", type=int, default=CONFIG["interface_bonds"]["detection_interval"])
+    parser.add_argument("--interface-stable-steps", type=int, default=CONFIG["interface_bonds"]["stable_steps"])
+    parser.add_argument("--interface-restraint-k", type=float, default=CONFIG["interface_bonds"]["restraint_k_ev_a2"])
+    parser.add_argument("--interface-events", default=CONFIG["interface_bonds"]["event_name"])
     args, unknown = parser.parse_known_args()
     if unknown:
         print(f"Ignoring unknown command-line arguments: {unknown}")
@@ -151,6 +188,7 @@ def run_simulation(args: argparse.Namespace) -> None:
     cif_root.mkdir(parents=True, exist_ok=True)
     restart_root.mkdir(parents=True, exist_ok=True)
     progress_path = output_root / args.template_progress
+    interface_event_path = output_root / args.interface_events
 
     system = CONFIG["system"]
     relaxation = CONFIG["relaxation"]
@@ -211,7 +249,27 @@ def run_simulation(args: argparse.Namespace) -> None:
     )
 
     bias = TDBBBias(atoms, pairs, params, target_distances=target_distances)
-    atoms.calc = BiasedCalculator(base_calculator, bias)
+    interface_config = InterfaceBondConfig(
+        enabled=args.interface_bonds,
+        molecule_seed_symbols=parse_symbol_list(args.molecule_seed_symbols),
+        molecule_symbols=parse_symbol_list(args.molecule_symbols),
+        molecule_bond_symbols=parse_symbol_list(args.molecule_bond_symbols),
+        surface_symbols=parse_symbol_list(args.surface_symbols),
+        bond_cutoff_scale=args.interface_bond_cutoff_scale,
+        min_bond_cutoff_ang=args.interface_min_cutoff,
+        max_bond_cutoff_ang=args.interface_max_cutoff,
+        min_bonds_to_stabilize=args.interface_min_bonds,
+        detection_interval=max(1, args.interface_detection_interval),
+        stable_steps=max(0, args.interface_stable_steps),
+        restraint_k_ev_a2=args.interface_restraint_k,
+        event_name=args.interface_events,
+    )
+    interface_stabilizer = InterfaceBondStabilizer(
+        k_ev_a2=interface_config.restraint_k_ev_a2,
+        hold_steps=interface_config.stable_steps,
+    )
+    combined_bias = CombinedBias([bias, interface_stabilizer]) if interface_config.enabled else bias
+    atoms.calc = BiasedCalculator(base_calculator, combined_bias)
     writer = DeepMDWriter(atoms, deepmd_root, set_interval=output["deepmd_set_interval"])
 
     if not args.restart_from:
@@ -244,12 +302,47 @@ def run_simulation(args: argparse.Namespace) -> None:
             progress_path.write_text(
                 ",".join(["step", "time_ps", "mean_abs_delta_A", *distance_headers, *target_headers, *type_headers]) + "\n"
             )
+    if interface_config.enabled and (not interface_event_path.exists() or start_step == 0):
+        write_interface_event_header(interface_event_path)
 
     def save_frame() -> None:
         step_counter["step"] += 1
         update_bias_time()
 
         step = step_counter["step"]
+        time_ps = step * ctrl["timestep"] / 1000.0
+
+        if interface_config.enabled and interface_stabilizer.clear_if_expired(step):
+            if atoms.calc is not None:
+                atoms.calc.reset()
+            print(f"Interface stabilization released at step {step}")
+
+        if interface_config.enabled and step % interface_config.detection_interval == 0:
+            interface_bonds = detect_interface_bonds(atoms, interface_config)
+            activated = interface_stabilizer.update(
+                atoms,
+                step,
+                interface_bonds,
+                interface_config.min_bonds_to_stabilize,
+            )
+            if activated and atoms.calc is not None:
+                atoms.calc.reset()
+                event_energy = float(atoms.get_potential_energy())
+                event_temperature = float(atoms.get_temperature())
+                print(
+                    f"Interface stabilization activated at step {step}: "
+                    f"{len(interface_bonds)} bonds, hold until step {interface_stabilizer.active_until_step}"
+                )
+                append_interface_event(
+                    interface_event_path,
+                    step,
+                    time_ps,
+                    float(run_state["target_temperature"]),
+                    event_temperature,
+                    event_energy,
+                    interface_bonds,
+                )
+
         if step % output["save_interval"] == 0:
             writer.add_frame(atoms, step)
 
@@ -264,7 +357,7 @@ def run_simulation(args: argparse.Namespace) -> None:
                 mean_abs_delta = float(np.mean(np.abs(distances - targets)))
                 row = [
                     str(step),
-                    f"{step * ctrl['timestep'] / 1000.0:.6f}",
+                    f"{time_ps:.6f}",
                     f"{mean_abs_delta:.6f}",
                     *[f"{distance:.6f}" for distance in distances],
                     *[f"{target:.6f}" for target in targets],
@@ -300,6 +393,16 @@ def run_simulation(args: argparse.Namespace) -> None:
         print(f"Template progress: {args.template_progress}")
     print(f"Target distances (A): {[round(x, 3) for x in bias.target_distances]}")
     print(f"Target bond types: {list(zip(pairs, target_keys))}")
+    if interface_config.enabled:
+        print(
+            "Interface bond stabilization: "
+            f"molecule atoms {interface_config.molecule_bond_symbols} -> "
+            f"surface atoms {interface_config.surface_symbols}, "
+            f"trigger >= {interface_config.min_bonds_to_stabilize} bonds, "
+            f"hold {interface_config.stable_steps} steps, "
+            f"k = {interface_config.restraint_k_ev_a2} eV/A^2"
+        )
+        print(f"Interface bond events: {interface_event_path}")
     print(f"PFP calc mode: {args.calc_mode}")
     print(f"Output root: {output_root}")
 
