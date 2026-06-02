@@ -2,10 +2,13 @@ from __future__ import annotations
 
 import argparse
 from concurrent.futures import ProcessPoolExecutor
+from contextlib import nullcontext, redirect_stderr, redirect_stdout
 import csv
 import shutil
+import sys
 import time
 from dataclasses import dataclass
+from io import StringIO
 from pathlib import Path
 from typing import Sequence
 
@@ -18,9 +21,11 @@ from ase.io import read
 # ============================================================
 # Jupyter control switch
 # ============================================================
-# In Jupyter, edit CONFIG, set RUN=True, then run the cell.
-# Or keep RUN=False and call run_search() manually.
+# This is a standalone single-file version. Edit CONFIG, set RUN=True,
+# then click Run in Jupyter. Or keep RUN=False and call run() manually.
 RUN = False
+QUIET = False
+SHOW_TRACEBACK = False
 SCRIPT_FILE = globals().get("__file__")
 
 
@@ -47,6 +52,9 @@ CONFIG = {
         # 6 is a good default for CIF parsing without saturating memory and disk I/O.
         # 0 means use all available CPU cores.
         "workers": 6,
+        # Windows/Jupyter multiprocessing is fragile when this file is run as a cell.
+        # Keep True for reliable notebook runs; use command line for fastest parallel scans.
+        "jupyter_force_serial": True,
     },
     "interface_bonds": {
         "molecule_seed_symbols": "C,H",
@@ -95,7 +103,36 @@ def run_search(config: dict | None = None) -> dict[str, object]:
         CONFIG["performance"]["workers"] = 6
         result = run_search()
     """
-    return filter_cif_files(config_to_namespace(config or CONFIG))
+    result = run(quiet=False, show_traceback=True, config=config)
+    if result is None:
+        raise RuntimeError("Search failed. Set SHOW_TRACEBACK=True for details.")
+    return result
+
+
+def run(
+    quiet: bool = QUIET,
+    show_traceback: bool = SHOW_TRACEBACK,
+    config: dict | None = None,
+) -> dict[str, object] | None:
+    active_config = config or CONFIG
+    args = config_to_namespace(active_config)
+
+    if "ipykernel" in sys.modules and active_config["performance"].get("jupyter_force_serial", True):
+        if args.workers != 1 and not quiet:
+            print("Jupyter detected: using workers=1 for reliable execution.")
+            print("For maximum speed, run this file from PowerShell with --workers 6.")
+        args.workers = 1
+
+    stdout_context = redirect_stdout(StringIO()) if quiet else nullcontext()
+    stderr_context = redirect_stderr(StringIO()) if quiet else nullcontext()
+    try:
+        with stdout_context, stderr_context:
+            return filter_cif_files(args)
+    except Exception as exc:
+        print(f"{type(exc).__name__}: {exc}")
+        if show_traceback:
+            raise
+    return None
 
 
 def parse_symbol_list(text: str) -> tuple[str, ...]:
@@ -515,6 +552,6 @@ def main(argv: Sequence[str] | None = None) -> None:
 
 
 if RUN:
-    SEARCH_RESULT = run_search()
-elif __name__ == "__main__" and SCRIPT_FILE is not None:
+    SEARCH_RESULT = run()
+elif __name__ == "__main__" and "ipykernel" not in sys.modules and SCRIPT_FILE is not None:
     main()
