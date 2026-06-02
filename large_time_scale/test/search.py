@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import argparse
+from concurrent.futures import ProcessPoolExecutor
 import csv
 import shutil
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Sequence
@@ -25,7 +27,14 @@ CONFIG = {
     "output": {
         "selected_dir": "interface_bond_cifs",
         "summary": "interface_bond_summary.csv",
+        "folder_progress": "folder_progress.csv",
         "dry_run": False,
+    },
+    "performance": {
+        # This machine has 6 physical cores / 12 logical threads.
+        # 6 is a good default for CIF parsing without saturating memory and disk I/O.
+        # 0 means use all available CPU cores.
+        "workers": 6,
     },
     "interface_bonds": {
         "molecule_seed_symbols": "C,H",
@@ -70,6 +79,15 @@ class InterfaceBond:
     surface_index: int
     distance_ang: float
     symbol_pair: str
+
+
+@dataclass(frozen=True)
+class StructureResult:
+    path: str
+    selected: bool
+    bond_count: int
+    bonds: tuple[InterfaceBond, ...]
+    error: str = ""
 
 
 def covalent_cutoff(atoms: Atoms, i: int, j: int, config: InterfaceBondConfig) -> float:
@@ -182,11 +200,77 @@ def copy_selected_structure(source: Path, scan_root: Path, output_dir: Path) -> 
     return destination
 
 
+def analyze_structure_file(path_text: str, config: InterfaceBondConfig) -> StructureResult:
+    bonds: list[InterfaceBond] = []
+    try:
+        atoms = read(path_text)
+        bonds = detect_interface_bonds(atoms, config)
+        return StructureResult(
+            path=path_text,
+            selected=len(bonds) >= config.min_bonds,
+            bond_count=len(bonds),
+            bonds=tuple(bonds),
+        )
+    except Exception as exc:  # Keep scanning after one bad structure.
+        return StructureResult(
+            path=path_text,
+            selected=False,
+            bond_count=len(bonds),
+            bonds=tuple(bonds),
+            error=f"{type(exc).__name__}: {exc}",
+        )
+
+
+def group_files_by_folder(paths: Sequence[Path]) -> list[tuple[Path, list[Path]]]:
+    grouped: dict[Path, list[Path]] = {}
+    for path in paths:
+        grouped.setdefault(path.parent, []).append(path)
+    return [(folder, sorted(files)) for folder, files in sorted(grouped.items())]
+
+
+def resolve_workers(workers: int) -> int:
+    if workers < 0:
+        raise ValueError("--workers must be >= 0.")
+    if workers == 0:
+        import os
+
+        return max(1, os.cpu_count() or 1)
+    return max(1, workers)
+
+
+def analyze_folder(
+    files: Sequence[Path],
+    config: InterfaceBondConfig,
+    workers: int,
+    executor: ProcessPoolExecutor | None = None,
+) -> list[StructureResult]:
+    if workers == 1 or len(files) <= 1:
+        return [analyze_structure_file(str(path), config) for path in files]
+
+    if executor is None:
+        with ProcessPoolExecutor(max_workers=workers) as local_executor:
+            return list(
+                local_executor.map(
+                    analyze_structure_file,
+                    [str(path) for path in files],
+                    [config] * len(files),
+                )
+            )
+    return list(
+        executor.map(
+            analyze_structure_file,
+            [str(path) for path in files],
+            [config] * len(files),
+        )
+    )
+
+
 def filter_cif_files(args: argparse.Namespace) -> None:
     input_root = Path(args.input_root).resolve()
     scan_root = resolve_scan_root(input_root, args.structure_dir).resolve()
     output_dir = Path(args.output_dir).resolve()
     summary_path = Path(args.summary).resolve()
+    folder_progress_path = Path(args.folder_progress).resolve()
 
     if not scan_root.is_dir():
         raise FileNotFoundError(f"Structure directory not found: {scan_root}")
@@ -208,59 +292,99 @@ def filter_cif_files(args: argparse.Namespace) -> None:
         parse_text_list(args.exclude_dirs),
     )
     summary_path.parent.mkdir(parents=True, exist_ok=True)
+    folder_progress_path.parent.mkdir(parents=True, exist_ok=True)
     if not args.dry_run:
         output_dir.mkdir(parents=True, exist_ok=True)
 
+    workers = resolve_workers(args.workers)
+    folders = group_files_by_folder(structure_files)
     selected_count = 0
     error_count = 0
-    with summary_path.open("w", newline="") as file:
-        writer = csv.writer(file)
-        writer.writerow(
-            [
-                "source",
-                "selected",
-                "bond_count",
-                "bonds",
-                "copied_to",
-                "error",
-            ]
-        )
-
-        for structure_file in structure_files:
-            copied_to = ""
-            error = ""
-            selected = False
-            bonds: list[InterfaceBond] = []
-            try:
-                atoms = read(structure_file)
-                bonds = detect_interface_bonds(atoms, config)
-                selected = len(bonds) >= config.min_bonds
-                if selected:
-                    selected_count += 1
-                    if not args.dry_run:
-                        copied_to = str(copy_selected_structure(structure_file, scan_root, output_dir))
-            except Exception as exc:  # Keep scanning after one bad structure.
-                error_count += 1
-                error = f"{type(exc).__name__}: {exc}"
-
-            writer.writerow(
+    processed_count = 0
+    started_at = time.perf_counter()
+    executor = ProcessPoolExecutor(max_workers=workers) if workers > 1 else None
+    try:
+        with summary_path.open("w", newline="") as summary_file, folder_progress_path.open("w", newline="") as progress_file:
+            summary_writer = csv.writer(summary_file)
+            progress_writer = csv.writer(progress_file)
+            summary_writer.writerow(["source", "selected", "bond_count", "bonds", "copied_to", "error"])
+            progress_writer.writerow(
                 [
-                    str(structure_file),
-                    int(selected),
-                    len(bonds),
-                    bond_text(bonds),
-                    copied_to,
-                    error,
+                    "folder",
+                    "folder_index",
+                    "folder_count",
+                    "files",
+                    "selected",
+                    "errors",
+                    "cumulative_files",
+                    "elapsed_sec",
                 ]
             )
+
+            for folder_index, (folder, folder_files) in enumerate(folders, start=1):
+                folder_started_at = time.perf_counter()
+                results = analyze_folder(folder_files, config, workers, executor)
+                folder_selected = 0
+                folder_errors = 0
+
+                for result in results:
+                    copied_to = ""
+                    structure_file = Path(result.path)
+                    if result.selected:
+                        selected_count += 1
+                        folder_selected += 1
+                        if not args.dry_run:
+                            copied_to = str(copy_selected_structure(structure_file, scan_root, output_dir))
+                    if result.error:
+                        error_count += 1
+                        folder_errors += 1
+
+                    summary_writer.writerow(
+                        [
+                            result.path,
+                            int(result.selected),
+                            result.bond_count,
+                            bond_text(result.bonds),
+                            copied_to,
+                            result.error,
+                        ]
+                    )
+
+                processed_count += len(folder_files)
+                elapsed = time.perf_counter() - started_at
+                folder_elapsed = time.perf_counter() - folder_started_at
+                progress_writer.writerow(
+                    [
+                        str(folder),
+                        folder_index,
+                        len(folders),
+                        len(folder_files),
+                        folder_selected,
+                        folder_errors,
+                        processed_count,
+                        f"{elapsed:.2f}",
+                    ]
+                )
+                summary_file.flush()
+                progress_file.flush()
+                print(
+                    f"[{folder_index}/{len(folders)}] {folder} done: "
+                    f"{len(folder_files)} files, {folder_selected} selected, "
+                    f"{folder_errors} errors, {folder_elapsed:.1f}s"
+                )
+    finally:
+        if executor is not None:
+            executor.shutdown()
 
     print(f"Structure root: {scan_root}")
     print(f"Structure patterns: {args.patterns}")
     print(f"Excluded directories: {args.exclude_dirs}")
+    print(f"Workers: {workers}")
     print(f"Scanned structure files: {len(structure_files)}")
     print(f"Selected files with >= {config.min_bonds} interface bonds: {selected_count}")
     print(f"Read/detection errors: {error_count}")
     print(f"Summary CSV: {summary_path}")
+    print(f"Folder progress CSV: {folder_progress_path}")
     if not args.dry_run:
         print(f"Selected CIF output: {output_dir}")
 
@@ -298,6 +422,13 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--output-dir", default=CONFIG["output"]["selected_dir"])
     parser.add_argument("--summary", default=CONFIG["output"]["summary"])
+    parser.add_argument("--folder-progress", default=CONFIG["output"]["folder_progress"])
+    parser.add_argument(
+        "--workers",
+        type=int,
+        default=CONFIG["performance"]["workers"],
+        help="Parallel worker processes. Use 1 for serial, 0 for all CPU cores.",
+    )
     parser.add_argument("--min-interface-bonds", type=int, default=CONFIG["interface_bonds"]["min_bonds"])
     parser.add_argument("--molecule-seed-symbols", default=CONFIG["interface_bonds"]["molecule_seed_symbols"])
     parser.add_argument("--molecule-symbols", default=CONFIG["interface_bonds"]["molecule_symbols"])
