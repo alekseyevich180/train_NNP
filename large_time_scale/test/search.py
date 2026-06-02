@@ -15,6 +15,18 @@ from ase.data import covalent_radii
 from ase.io import read
 
 
+# ============================================================
+# Jupyter control switch
+# ============================================================
+# In Jupyter, edit CONFIG, set RUN=True, then run the cell.
+# Or keep RUN=False and call run_search() manually.
+RUN = False
+SCRIPT_FILE = globals().get("__file__")
+
+
+# ============================================================
+# Editable CONFIG
+# ============================================================
 CONFIG = {
     "input": {
         # Run the script from the folder that contains generated structure subfolders.
@@ -47,6 +59,43 @@ CONFIG = {
         "min_bonds": 2,
     },
 }
+
+
+def config_to_namespace(config: dict) -> argparse.Namespace:
+    input_config = config["input"]
+    output_config = config["output"]
+    performance_config = config["performance"]
+    interface_config = config["interface_bonds"]
+    return argparse.Namespace(
+        input_root=input_config["root"],
+        structure_dir=input_config["structure_dir"],
+        patterns=input_config["patterns"],
+        exclude_dirs=input_config["exclude_dirs"],
+        output_dir=output_config["selected_dir"],
+        summary=output_config["summary"],
+        folder_progress=output_config["folder_progress"],
+        dry_run=output_config["dry_run"],
+        workers=performance_config["workers"],
+        min_interface_bonds=interface_config["min_bonds"],
+        molecule_seed_symbols=interface_config["molecule_seed_symbols"],
+        molecule_symbols=interface_config["molecule_symbols"],
+        molecule_bond_symbols=interface_config["molecule_bond_symbols"],
+        surface_symbols=interface_config["surface_symbols"],
+        interface_bond_cutoff_scale=interface_config["bond_cutoff_scale"],
+        interface_min_cutoff=interface_config["min_bond_cutoff_ang"],
+        interface_max_cutoff=interface_config["max_bond_cutoff_ang"],
+    )
+
+
+def run_search(config: dict | None = None) -> dict[str, object]:
+    """Jupyter-friendly entry point.
+
+    Example:
+        CONFIG["input"]["root"] = "."
+        CONFIG["performance"]["workers"] = 6
+        result = run_search()
+    """
+    return filter_cif_files(config_to_namespace(config or CONFIG))
 
 
 def parse_symbol_list(text: str) -> tuple[str, ...]:
@@ -265,7 +314,7 @@ def analyze_folder(
     )
 
 
-def filter_cif_files(args: argparse.Namespace) -> None:
+def filter_cif_files(args: argparse.Namespace) -> dict[str, object]:
     input_root = Path(args.input_root).resolve()
     scan_root = resolve_scan_root(input_root, args.structure_dir).resolve()
     output_dir = Path(args.output_dir).resolve()
@@ -388,8 +437,19 @@ def filter_cif_files(args: argparse.Namespace) -> None:
     if not args.dry_run:
         print(f"Selected CIF output: {output_dir}")
 
+    return {
+        "scan_root": scan_root,
+        "structure_files": len(structure_files),
+        "selected_files": selected_count,
+        "errors": error_count,
+        "summary": summary_path,
+        "folder_progress": folder_progress_path,
+        "output_dir": output_dir if not args.dry_run else None,
+        "workers": workers,
+    }
 
-def parse_args() -> argparse.Namespace:
+
+def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
             "Filter generated structures in the current folder tree and keep structures "
@@ -447,12 +507,14 @@ def parse_args() -> argparse.Namespace:
         default=CONFIG["output"]["dry_run"],
         help="Only write the summary CSV; do not copy selected CIF files.",
     )
-    return parser.parse_args()
+    return parser.parse_args(argv)
 
 
-def main() -> None:
-    filter_cif_files(parse_args())
+def main(argv: Sequence[str] | None = None) -> None:
+    filter_cif_files(parse_args(argv))
 
 
-if __name__ == "__main__":
+if RUN:
+    SEARCH_RESULT = run_search()
+elif __name__ == "__main__" and SCRIPT_FILE is not None:
     main()
