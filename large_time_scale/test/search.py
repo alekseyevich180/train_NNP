@@ -48,13 +48,11 @@ CONFIG = {
         "dry_run": False,
     },
     "performance": {
-        # This machine has 6 physical cores / 12 logical threads.
-        # 6 is a good default for CIF parsing without saturating memory and disk I/O.
-        # 0 means use all available CPU cores.
-        "workers": 6,
-        # Windows/Jupyter multiprocessing is fragile when this file is run as a cell.
-        # Keep True for reliable notebook runs; use command line for fastest parallel scans.
-        "jupyter_force_serial": True,
+        # 0 means use all CPU cores available on the current server.
+        # Set a positive integer to reserve resources for other jobs.
+        "workers": 0,
+        # Set True only if your notebook environment cannot run multiprocessing.
+        "jupyter_force_serial": False,
     },
     "interface_bonds": {
         "molecule_seed_symbols": "C,H",
@@ -100,7 +98,7 @@ def run_search(config: dict | None = None) -> dict[str, object]:
 
     Example:
         CONFIG["input"]["root"] = "."
-        CONFIG["performance"]["workers"] = 6
+        CONFIG["performance"]["workers"] = 0
         result = run_search()
     """
     result = run(quiet=False, show_traceback=True, config=config)
@@ -120,7 +118,7 @@ def run(
     if "ipykernel" in sys.modules and active_config["performance"].get("jupyter_force_serial", True):
         if args.workers != 1 and not quiet:
             print("Jupyter detected: using workers=1 for reliable execution.")
-            print("For maximum speed, run this file from PowerShell with --workers 6.")
+            print("For maximum speed, set jupyter_force_serial=False or run from shell with --workers 0.")
         args.workers = 1
 
     stdout_context = redirect_stdout(StringIO()) if quiet else nullcontext()
