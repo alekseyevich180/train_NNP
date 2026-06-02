@@ -1,14 +1,11 @@
 from __future__ import annotations
 
 import argparse
-from concurrent.futures import ProcessPoolExecutor
-from contextlib import nullcontext, redirect_stderr, redirect_stdout
 import csv
+import os
 import shutil
-import sys
-import time
+from concurrent.futures import FIRST_COMPLETED, ProcessPoolExecutor, wait
 from dataclasses import dataclass
-from io import StringIO
 from pathlib import Path
 from typing import Sequence
 
@@ -18,25 +15,9 @@ from ase.data import covalent_radii
 from ase.io import read
 
 
-# ============================================================
-# Jupyter control switch
-# ============================================================
-# This is a standalone single-file version. Edit CONFIG, set RUN=True,
-# then click Run in Jupyter. Or keep RUN=False and call run() manually.
-RUN = False
-QUIET = False
-SHOW_TRACEBACK = False
-SCRIPT_FILE = globals().get("__file__")
-
-
-# ============================================================
-# Editable CONFIG
-# ============================================================
 CONFIG = {
     "input": {
-        # Run the script from the folder that contains generated structure subfolders.
         "root": ".",
-        # Optional subdirectory under root. Keep None to scan root recursively.
         "structure_dir": None,
         "patterns": "*.cif",
         "exclude_dirs": "interface_bond_cifs",
@@ -44,15 +25,11 @@ CONFIG = {
     "output": {
         "selected_dir": "interface_bond_cifs",
         "summary": "interface_bond_summary.csv",
-        "folder_progress": "folder_progress.csv",
+        "progress_markdown": "interface_bond_progress.md",
         "dry_run": False,
     },
     "performance": {
-        # 0 means use all CPU cores available on the current server.
-        # Set a positive integer to reserve resources for other jobs.
-        "workers": 0,
-        # Set True only if your notebook environment cannot run multiprocessing.
-        "jupyter_force_serial": False,
+        "workers": 1,
     },
     "interface_bonds": {
         "molecule_seed_symbols": "C,H",
@@ -67,94 +44,16 @@ CONFIG = {
 }
 
 
-def config_to_namespace(config: dict) -> argparse.Namespace:
-    input_config = config["input"]
-    output_config = config["output"]
-    performance_config = config["performance"]
-    interface_config = config["interface_bonds"]
-    return argparse.Namespace(
-        input_root=input_config["root"],
-        structure_dir=input_config["structure_dir"],
-        patterns=input_config["patterns"],
-        exclude_dirs=input_config["exclude_dirs"],
-        output_dir=output_config["selected_dir"],
-        summary=output_config["summary"],
-        folder_progress=output_config["folder_progress"],
-        dry_run=output_config["dry_run"],
-        workers=performance_config["workers"],
-        min_interface_bonds=interface_config["min_bonds"],
-        molecule_seed_symbols=interface_config["molecule_seed_symbols"],
-        molecule_symbols=interface_config["molecule_symbols"],
-        molecule_bond_symbols=interface_config["molecule_bond_symbols"],
-        surface_symbols=interface_config["surface_symbols"],
-        interface_bond_cutoff_scale=interface_config["bond_cutoff_scale"],
-        interface_min_cutoff=interface_config["min_bond_cutoff_ang"],
-        interface_max_cutoff=interface_config["max_bond_cutoff_ang"],
-    )
-
-
-def run_search(config: dict | None = None) -> dict[str, object]:
-    """Jupyter-friendly entry point.
-
-    Example:
-        CONFIG["input"]["root"] = "."
-        CONFIG["performance"]["workers"] = 0
-        result = run_search()
-    """
-    result = run(quiet=False, show_traceback=True, config=config)
-    if result is None:
-        raise RuntimeError("Search failed. Set SHOW_TRACEBACK=True for details.")
-    return result
-
-
-def run(
-    quiet: bool = QUIET,
-    show_traceback: bool = SHOW_TRACEBACK,
-    config: dict | None = None,
-) -> dict[str, object] | None:
-    active_config = config or CONFIG
-    args = config_to_namespace(active_config)
-
-    if "ipykernel" in sys.modules and active_config["performance"].get("jupyter_force_serial", True):
-        if args.workers != 1 and not quiet:
-            print("Jupyter detected: using workers=1 for reliable execution.")
-            print("For maximum speed, set jupyter_force_serial=False or run from shell with --workers 0.")
-        args.workers = 1
-
-    stdout_context = redirect_stdout(StringIO()) if quiet else nullcontext()
-    stderr_context = redirect_stderr(StringIO()) if quiet else nullcontext()
-    try:
-        with stdout_context, stderr_context:
-            return filter_cif_files(args)
-    except Exception as exc:
-        print(f"{type(exc).__name__}: {exc}")
-        if show_traceback:
-            raise
-    return None
-
-
-def parse_symbol_list(text: str) -> tuple[str, ...]:
-    return tuple(item.strip() for item in text.split(",") if item.strip())
-
-
-def parse_text_list(text: str) -> tuple[str, ...]:
-    return tuple(item.strip() for item in text.split(",") if item.strip())
-
-
-def pair_key(symbol_a: str, symbol_b: str) -> str:
-    return "-".join(sorted((symbol_a, symbol_b)))
-
-
 @dataclass(frozen=True)
 class InterfaceBondConfig:
-    molecule_seed_symbols: tuple[str, ...] = ("C", "H")
-    molecule_symbols: tuple[str, ...] = ("C", "H", "O", "N", "S")
-    molecule_bond_symbols: tuple[str, ...] = ("C",)
-    surface_symbols: tuple[str, ...] = ("Zn", "O")
-    bond_cutoff_scale: float = 1.25
-    min_bond_cutoff_ang: float = 0.7
-    max_bond_cutoff_ang: float = 2.4
-    min_bonds: int = 2
+    molecule_seed_symbols: tuple[str, ...]
+    molecule_symbols: tuple[str, ...]
+    molecule_bond_symbols: tuple[str, ...]
+    surface_symbols: tuple[str, ...]
+    bond_cutoff_scale: float
+    min_bond_cutoff_ang: float
+    max_bond_cutoff_ang: float
+    min_bonds: int
 
 
 @dataclass(frozen=True)
@@ -174,6 +73,32 @@ class StructureResult:
     error: str = ""
 
 
+def parse_list(text: str | Sequence[str] | None) -> tuple[str, ...]:
+    if text is None:
+        return ()
+    if isinstance(text, str):
+        return tuple(item.strip() for item in text.split(",") if item.strip())
+    return tuple(str(item).strip() for item in text if str(item).strip())
+
+
+def pair_key(symbol_a: str, symbol_b: str) -> str:
+    return "-".join(sorted((symbol_a, symbol_b)))
+
+
+def build_interface_config(config: dict) -> InterfaceBondConfig:
+    interface_config = config["interface_bonds"]
+    return InterfaceBondConfig(
+        molecule_seed_symbols=parse_list(interface_config["molecule_seed_symbols"]),
+        molecule_symbols=parse_list(interface_config["molecule_symbols"]),
+        molecule_bond_symbols=parse_list(interface_config["molecule_bond_symbols"]),
+        surface_symbols=parse_list(interface_config["surface_symbols"]),
+        bond_cutoff_scale=float(interface_config["bond_cutoff_scale"]),
+        min_bond_cutoff_ang=float(interface_config["min_bond_cutoff_ang"]),
+        max_bond_cutoff_ang=float(interface_config["max_bond_cutoff_ang"]),
+        min_bonds=int(interface_config["min_bonds"]),
+    )
+
+
 def covalent_cutoff(atoms: Atoms, i: int, j: int, config: InterfaceBondConfig) -> float:
     numbers = atoms.get_atomic_numbers()
     ri = float(covalent_radii[numbers[i]])
@@ -187,17 +112,14 @@ def covalent_cutoff(atoms: Atoms, i: int, j: int, config: InterfaceBondConfig) -
 def detect_molecule_indices(atoms: Atoms, config: InterfaceBondConfig) -> set[int]:
     symbols = atoms.get_chemical_symbols()
     allowed = set(config.molecule_symbols)
-    seeds = {
+    molecule = {
         index
         for index, symbol in enumerate(symbols)
         if symbol in config.molecule_seed_symbols and symbol in allowed
     }
-    if not seeds:
-        raise ValueError(
-            "No molecule seed atoms were found. Adjust --molecule-seed-symbols."
-        )
+    if not molecule:
+        raise ValueError("No molecule seed atoms were found.")
 
-    molecule = set(seeds)
     changed = True
     while changed:
         changed = False
@@ -205,7 +127,8 @@ def detect_molecule_indices(atoms: Atoms, config: InterfaceBondConfig) -> set[in
             if i in molecule or symbol_i not in allowed:
                 continue
             for j in tuple(molecule):
-                if float(atoms.get_distance(i, j, mic=True)) <= covalent_cutoff(atoms, i, j, config):
+                distance = float(atoms.get_distance(i, j, mic=True))
+                if distance <= covalent_cutoff(atoms, i, j, config):
                     molecule.add(i)
                     changed = True
                     break
@@ -213,7 +136,7 @@ def detect_molecule_indices(atoms: Atoms, config: InterfaceBondConfig) -> set[in
     return molecule
 
 
-def detect_interface_bonds(atoms: Atoms, config: InterfaceBondConfig) -> list[InterfaceBond]:
+def detect_interface_bonds(atoms: Atoms, config: InterfaceBondConfig) -> tuple[InterfaceBond, ...]:
     molecule_indices = detect_molecule_indices(atoms, config)
     symbols = atoms.get_chemical_symbols()
     molecule_bond_symbols = set(config.molecule_bond_symbols)
@@ -224,29 +147,29 @@ def detect_interface_bonds(atoms: Atoms, config: InterfaceBondConfig) -> list[In
     ]
 
     bonds: list[InterfaceBond] = []
-    for mol_index in sorted(molecule_indices):
-        if symbols[mol_index] not in molecule_bond_symbols:
+    for molecule_index in sorted(molecule_indices):
+        if symbols[molecule_index] not in molecule_bond_symbols:
             continue
-        for surf_index in surface_indices:
-            distance = float(atoms.get_distance(mol_index, surf_index, mic=True))
-            if distance <= covalent_cutoff(atoms, mol_index, surf_index, config):
+        for surface_index in surface_indices:
+            distance = float(atoms.get_distance(molecule_index, surface_index, mic=True))
+            if distance <= covalent_cutoff(atoms, molecule_index, surface_index, config):
                 bonds.append(
                     InterfaceBond(
-                        molecule_index=mol_index,
-                        surface_index=surf_index,
+                        molecule_index=molecule_index,
+                        surface_index=surface_index,
                         distance_ang=distance,
-                        symbol_pair=pair_key(symbols[mol_index], symbols[surf_index]),
+                        symbol_pair=pair_key(symbols[molecule_index], symbols[surface_index]),
                     )
                 )
 
-    return sorted(bonds, key=lambda bond: (bond.molecule_index, bond.surface_index))
+    return tuple(sorted(bonds, key=lambda bond: (bond.molecule_index, bond.surface_index)))
 
 
 def resolve_scan_root(input_root: Path, structure_dir: str | None) -> Path:
-    if structure_dir:
-        structure_path = Path(structure_dir)
-        return structure_path if structure_path.is_absolute() else input_root / structure_path
-    return input_root
+    if not structure_dir:
+        return input_root
+    structure_path = Path(structure_dir)
+    return structure_path if structure_path.is_absolute() else input_root / structure_path
 
 
 def is_excluded(path: Path, scan_root: Path, exclude_dirs: set[str]) -> bool:
@@ -269,6 +192,27 @@ def iter_structure_files(scan_root: Path, patterns: Sequence[str], exclude_dirs:
     return sorted(set(files))
 
 
+def analyze_structure_file(path: Path, config: InterfaceBondConfig) -> StructureResult:
+    bonds: tuple[InterfaceBond, ...] = ()
+    try:
+        atoms = read(path)
+        bonds = detect_interface_bonds(atoms, config)
+        return StructureResult(
+            path=str(path),
+            selected=len(bonds) >= config.min_bonds,
+            bond_count=len(bonds),
+            bonds=bonds,
+        )
+    except Exception as exc:
+        return StructureResult(
+            path=str(path),
+            selected=False,
+            bond_count=len(bonds),
+            bonds=bonds,
+            error=f"{type(exc).__name__}: {exc}",
+        )
+
+
 def bond_text(bonds: Sequence[InterfaceBond]) -> str:
     return ";".join(
         f"{bond.molecule_index}-{bond.surface_index}:{bond.symbol_pair}:{bond.distance_ang:.4f}"
@@ -276,201 +220,220 @@ def bond_text(bonds: Sequence[InterfaceBond]) -> str:
     )
 
 
-def copy_selected_structure(source: Path, scan_root: Path, output_dir: Path) -> Path:
-    relative = source.relative_to(scan_root)
-    destination = output_dir / relative
+def unique_destination(output_dir: Path, filename: str) -> Path:
+    destination = output_dir / filename
+    if not destination.exists():
+        return destination
+
+    stem = destination.stem
+    suffix = destination.suffix
+    index = 2
+    while True:
+        candidate = output_dir / f"{stem}_{index}{suffix}"
+        if not candidate.exists():
+            return candidate
+        index += 1
+
+
+def copy_selected_structure(source: Path, output_dir: Path) -> Path:
+    destination = unique_destination(output_dir, source.name)
     destination.parent.mkdir(parents=True, exist_ok=True)
     shutil.copy2(source, destination)
     return destination
-
-
-def analyze_structure_file(path_text: str, config: InterfaceBondConfig) -> StructureResult:
-    bonds: list[InterfaceBond] = []
-    try:
-        atoms = read(path_text)
-        bonds = detect_interface_bonds(atoms, config)
-        return StructureResult(
-            path=path_text,
-            selected=len(bonds) >= config.min_bonds,
-            bond_count=len(bonds),
-            bonds=tuple(bonds),
-        )
-    except Exception as exc:  # Keep scanning after one bad structure.
-        return StructureResult(
-            path=path_text,
-            selected=False,
-            bond_count=len(bonds),
-            bonds=tuple(bonds),
-            error=f"{type(exc).__name__}: {exc}",
-        )
-
-
-def group_files_by_folder(paths: Sequence[Path]) -> list[tuple[Path, list[Path]]]:
-    grouped: dict[Path, list[Path]] = {}
-    for path in paths:
-        grouped.setdefault(path.parent, []).append(path)
-    return [(folder, sorted(files)) for folder, files in sorted(grouped.items())]
 
 
 def resolve_workers(workers: int) -> int:
     if workers < 0:
         raise ValueError("--workers must be >= 0.")
     if workers == 0:
-        import os
-
         return max(1, os.cpu_count() or 1)
     return max(1, workers)
 
 
-def analyze_folder(
-    files: Sequence[Path],
+def iter_parallel_results(
+    structure_files: Sequence[Path],
     config: InterfaceBondConfig,
     workers: int,
-    executor: ProcessPoolExecutor | None = None,
-) -> list[StructureResult]:
-    if workers == 1 or len(files) <= 1:
-        return [analyze_structure_file(str(path), config) for path in files]
+) -> Sequence[tuple[Path, StructureResult]]:
+    max_pending = max(workers * 2, workers)
+    path_iter = iter(structure_files)
+    with ProcessPoolExecutor(max_workers=workers) as executor:
+        pending = {}
+        for path in path_iter:
+            pending[executor.submit(analyze_structure_file, path, config)] = path
+            if len(pending) >= max_pending:
+                break
 
-    if executor is None:
-        with ProcessPoolExecutor(max_workers=workers) as local_executor:
-            return list(
-                local_executor.map(
-                    analyze_structure_file,
-                    [str(path) for path in files],
-                    [config] * len(files),
-                )
+        while pending:
+            done, _ = wait(pending, return_when=FIRST_COMPLETED)
+            for future in done:
+                path = pending.pop(future)
+                yield path, future.result()
+
+                try:
+                    next_path = next(path_iter)
+                except StopIteration:
+                    continue
+                pending[executor.submit(analyze_structure_file, next_path, config)] = next_path
+
+
+def markdown_cell(text: object) -> str:
+    return str(text).replace("|", "\\|").replace("\n", " ")
+
+
+def display_path(path: Path, scan_root: Path) -> str:
+    try:
+        return str(path.relative_to(scan_root))
+    except ValueError:
+        return str(path)
+
+
+def write_progress_markdown(
+    progress_path: Path,
+    scan_root: Path,
+    total_count: int,
+    processed_count: int,
+    selected_count: int,
+    error_count: int,
+    current_path: Path | None,
+    results: Sequence[StructureResult],
+) -> None:
+    current_file = display_path(current_path, scan_root) if current_path is not None else ""
+    lines = [
+        "# Interface Bond Search Progress",
+        "",
+        f"- Processed: {processed_count}/{total_count}",
+        f"- Selected: {selected_count}",
+        f"- Errors: {error_count}",
+        f"- Current file: {current_file}",
+        "",
+        "| file | selected | surface bond count | bonds | error |",
+        "| --- | ---: | ---: | --- | --- |",
+    ]
+    for result in results:
+        lines.append(
+            "| "
+            + " | ".join(
+                [
+                    markdown_cell(display_path(Path(result.path), scan_root)),
+                    str(int(result.selected)),
+                    str(result.bond_count),
+                    markdown_cell(bond_text(result.bonds)),
+                    markdown_cell(result.error),
+                ]
             )
-    return list(
-        executor.map(
-            analyze_structure_file,
-            [str(path) for path in files],
-            [config] * len(files),
+            + " |"
         )
-    )
+
+    progress_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
-def filter_cif_files(args: argparse.Namespace) -> dict[str, object]:
-    input_root = Path(args.input_root).resolve()
-    scan_root = resolve_scan_root(input_root, args.structure_dir).resolve()
-    output_dir = Path(args.output_dir).resolve()
-    summary_path = Path(args.summary).resolve()
-    folder_progress_path = Path(args.folder_progress).resolve()
+def filter_structure_files(config: dict, show_progress: bool = True) -> dict[str, object]:
+    input_config = config["input"]
+    output_config = config["output"]
+    performance_config = config["performance"]
+
+    input_root = Path(input_config["root"]).resolve()
+    scan_root = resolve_scan_root(input_root, input_config["structure_dir"]).resolve()
+    output_dir = Path(output_config["selected_dir"]).resolve()
+    summary_path = Path(output_config["summary"]).resolve()
+    progress_path = Path(output_config["progress_markdown"]).resolve()
+    dry_run = bool(output_config["dry_run"])
+    interface_config = build_interface_config(config)
+    workers = resolve_workers(int(performance_config["workers"]))
 
     if not scan_root.is_dir():
         raise FileNotFoundError(f"Structure directory not found: {scan_root}")
 
-    config = InterfaceBondConfig(
-        molecule_seed_symbols=parse_symbol_list(args.molecule_seed_symbols),
-        molecule_symbols=parse_symbol_list(args.molecule_symbols),
-        molecule_bond_symbols=parse_symbol_list(args.molecule_bond_symbols),
-        surface_symbols=parse_symbol_list(args.surface_symbols),
-        bond_cutoff_scale=args.interface_bond_cutoff_scale,
-        min_bond_cutoff_ang=args.interface_min_cutoff,
-        max_bond_cutoff_ang=args.interface_max_cutoff,
-        min_bonds=args.min_interface_bonds,
-    )
-
     structure_files = iter_structure_files(
         scan_root,
-        parse_text_list(args.patterns),
-        parse_text_list(args.exclude_dirs),
+        parse_list(input_config["patterns"]),
+        parse_list(input_config["exclude_dirs"]),
     )
     summary_path.parent.mkdir(parents=True, exist_ok=True)
-    folder_progress_path.parent.mkdir(parents=True, exist_ok=True)
-    if not args.dry_run:
+    progress_path.parent.mkdir(parents=True, exist_ok=True)
+    if not dry_run:
         output_dir.mkdir(parents=True, exist_ok=True)
 
-    workers = resolve_workers(args.workers)
-    folders = group_files_by_folder(structure_files)
     selected_count = 0
     error_count = 0
-    processed_count = 0
-    started_at = time.perf_counter()
-    executor = ProcessPoolExecutor(max_workers=workers) if workers > 1 else None
-    try:
-        with summary_path.open("w", newline="") as summary_file, folder_progress_path.open("w", newline="") as progress_file:
-            summary_writer = csv.writer(summary_file)
-            progress_writer = csv.writer(progress_file)
-            summary_writer.writerow(["source", "selected", "bond_count", "bonds", "copied_to", "error"])
-            progress_writer.writerow(
+    processed_results: list[StructureResult] = []
+    write_progress_markdown(
+        progress_path,
+        scan_root,
+        len(structure_files),
+        0,
+        selected_count,
+        error_count,
+        None,
+        processed_results,
+    )
+    with summary_path.open("w", newline="") as summary_file:
+        writer = csv.writer(summary_file)
+        writer.writerow(["source", "selected", "bond_count", "bonds", "copied_to", "error"])
+
+        if workers == 1 or len(structure_files) <= 1:
+            result_iter = (
+                (path, analyze_structure_file(path, interface_config))
+                for path in structure_files
+            )
+        else:
+            result_iter = iter_parallel_results(structure_files, interface_config, workers)
+
+        for processed_count, (path, result) in enumerate(result_iter, start=1):
+            copied_to = ""
+            if result.selected:
+                selected_count += 1
+                if not dry_run:
+                    copied_to = str(copy_selected_structure(path, output_dir))
+            if result.error:
+                error_count += 1
+            processed_results.append(result)
+
+            writer.writerow(
                 [
-                    "folder",
-                    "folder_index",
-                    "folder_count",
-                    "files",
-                    "selected",
-                    "errors",
-                    "cumulative_files",
-                    "elapsed_sec",
+                    result.path,
+                    int(result.selected),
+                    result.bond_count,
+                    bond_text(result.bonds),
+                    copied_to,
+                    result.error,
                 ]
             )
-
-            for folder_index, (folder, folder_files) in enumerate(folders, start=1):
-                folder_started_at = time.perf_counter()
-                results = analyze_folder(folder_files, config, workers, executor)
-                folder_selected = 0
-                folder_errors = 0
-
-                for result in results:
-                    copied_to = ""
-                    structure_file = Path(result.path)
-                    if result.selected:
-                        selected_count += 1
-                        folder_selected += 1
-                        if not args.dry_run:
-                            copied_to = str(copy_selected_structure(structure_file, scan_root, output_dir))
-                    if result.error:
-                        error_count += 1
-                        folder_errors += 1
-
-                    summary_writer.writerow(
-                        [
-                            result.path,
-                            int(result.selected),
-                            result.bond_count,
-                            bond_text(result.bonds),
-                            copied_to,
-                            result.error,
-                        ]
-                    )
-
-                processed_count += len(folder_files)
-                elapsed = time.perf_counter() - started_at
-                folder_elapsed = time.perf_counter() - folder_started_at
-                progress_writer.writerow(
-                    [
-                        str(folder),
-                        folder_index,
-                        len(folders),
-                        len(folder_files),
-                        folder_selected,
-                        folder_errors,
-                        processed_count,
-                        f"{elapsed:.2f}",
-                    ]
-                )
-                summary_file.flush()
-                progress_file.flush()
+            summary_file.flush()
+            write_progress_markdown(
+                progress_path,
+                scan_root,
+                len(structure_files),
+                processed_count,
+                selected_count,
+                error_count,
+                path,
+                processed_results,
+            )
+            if show_progress:
                 print(
-                    f"[{folder_index}/{len(folders)}] {folder} done: "
-                    f"{len(folder_files)} files, {folder_selected} selected, "
-                    f"{folder_errors} errors, {folder_elapsed:.1f}s"
+                    f"[{processed_count}/{len(structure_files)}] "
+                    f"{display_path(path, scan_root)} | bonds={result.bond_count} "
+                    f"| selected={int(result.selected)}",
+                    end="\r",
+                    flush=True,
                 )
-    finally:
-        if executor is not None:
-            executor.shutdown()
+
+    if show_progress:
+        print()
 
     print(f"Structure root: {scan_root}")
-    print(f"Structure patterns: {args.patterns}")
-    print(f"Excluded directories: {args.exclude_dirs}")
+    print(f"Structure patterns: {input_config['patterns']}")
+    print(f"Excluded directories: {input_config['exclude_dirs']}")
     print(f"Workers: {workers}")
     print(f"Scanned structure files: {len(structure_files)}")
-    print(f"Selected files with >= {config.min_bonds} interface bonds: {selected_count}")
+    print(f"Selected files with >= {interface_config.min_bonds} interface bonds: {selected_count}")
     print(f"Read/detection errors: {error_count}")
     print(f"Summary CSV: {summary_path}")
-    print(f"Folder progress CSV: {folder_progress_path}")
-    if not args.dry_run:
-        print(f"Selected CIF output: {output_dir}")
+    print(f"Progress Markdown: {progress_path}")
+    if not dry_run:
+        print(f"Selected structure output: {output_dir}")
 
     return {
         "scan_root": scan_root,
@@ -478,51 +441,59 @@ def filter_cif_files(args: argparse.Namespace) -> dict[str, object]:
         "selected_files": selected_count,
         "errors": error_count,
         "summary": summary_path,
-        "folder_progress": folder_progress_path,
-        "output_dir": output_dir if not args.dry_run else None,
+        "progress_markdown": progress_path,
+        "output_dir": output_dir if not dry_run else None,
         "workers": workers,
+    }
+
+
+def config_from_args(args: argparse.Namespace) -> dict:
+    return {
+        "input": {
+            "root": args.input_root,
+            "structure_dir": args.structure_dir,
+            "patterns": args.patterns,
+            "exclude_dirs": args.exclude_dirs,
+        },
+        "output": {
+            "selected_dir": args.output_dir,
+            "summary": args.summary,
+            "progress_markdown": args.progress_markdown,
+            "dry_run": args.dry_run,
+        },
+        "performance": {
+            "workers": args.workers,
+        },
+        "interface_bonds": {
+            "molecule_seed_symbols": args.molecule_seed_symbols,
+            "molecule_symbols": args.molecule_symbols,
+            "molecule_bond_symbols": args.molecule_bond_symbols,
+            "surface_symbols": args.surface_symbols,
+            "bond_cutoff_scale": args.interface_bond_cutoff_scale,
+            "min_bond_cutoff_ang": args.interface_min_cutoff,
+            "max_bond_cutoff_ang": args.interface_max_cutoff,
+            "min_bonds": args.min_interface_bonds,
+        },
     }
 
 
 def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description=(
-            "Filter generated structures in the current folder tree and keep structures "
-            "with molecule-surface interface bonds."
-        )
+        description="Filter structure files with molecule-surface interface bonds."
     )
-    parser.add_argument(
-        "--input-root",
-        "--dataset-root",
-        dest="input_root",
-        default=CONFIG["input"]["root"],
-        help="Root directory to scan recursively. Default is the current working directory.",
-    )
-    parser.add_argument(
-        "--structure-dir",
-        "--cif-dir",
-        dest="structure_dir",
-        default=CONFIG["input"]["structure_dir"],
-        help="Optional structure directory relative to input root. If omitted, scan input root.",
-    )
-    parser.add_argument(
-        "--patterns",
-        default=CONFIG["input"]["patterns"],
-        help="Comma-separated file patterns to scan, for example '*.cif,*.traj'.",
-    )
-    parser.add_argument(
-        "--exclude-dirs",
-        default=CONFIG["input"]["exclude_dirs"],
-        help="Comma-separated directory names to skip while scanning.",
-    )
+    parser.add_argument("--input-root", "--dataset-root", dest="input_root", default=CONFIG["input"]["root"])
+    parser.add_argument("--structure-dir", "--cif-dir", dest="structure_dir", default=CONFIG["input"]["structure_dir"])
+    parser.add_argument("--patterns", default=CONFIG["input"]["patterns"])
+    parser.add_argument("--exclude-dirs", default=CONFIG["input"]["exclude_dirs"])
     parser.add_argument("--output-dir", default=CONFIG["output"]["selected_dir"])
     parser.add_argument("--summary", default=CONFIG["output"]["summary"])
-    parser.add_argument("--folder-progress", default=CONFIG["output"]["folder_progress"])
+    parser.add_argument("--progress-markdown", default=CONFIG["output"]["progress_markdown"])
+    parser.add_argument("--dry-run", action="store_true", default=CONFIG["output"]["dry_run"])
     parser.add_argument(
         "--workers",
         type=int,
         default=CONFIG["performance"]["workers"],
-        help="Parallel worker processes. Use 1 for serial, 0 for all CPU cores.",
+        help="Parallel Python worker processes. Use 1 for serial, 0 for all CPU cores.",
     )
     parser.add_argument("--min-interface-bonds", type=int, default=CONFIG["interface_bonds"]["min_bonds"])
     parser.add_argument("--molecule-seed-symbols", default=CONFIG["interface_bonds"]["molecule_seed_symbols"])
@@ -536,20 +507,12 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument("--interface-min-cutoff", type=float, default=CONFIG["interface_bonds"]["min_bond_cutoff_ang"])
     parser.add_argument("--interface-max-cutoff", type=float, default=CONFIG["interface_bonds"]["max_bond_cutoff_ang"])
-    parser.add_argument(
-        "--dry-run",
-        action="store_true",
-        default=CONFIG["output"]["dry_run"],
-        help="Only write the summary CSV; do not copy selected CIF files.",
-    )
     return parser.parse_args(argv)
 
 
 def main(argv: Sequence[str] | None = None) -> None:
-    filter_cif_files(parse_args(argv))
+    filter_structure_files(config_from_args(parse_args(argv)), show_progress=True)
 
 
-if RUN:
-    SEARCH_RESULT = run()
-elif __name__ == "__main__" and "ipykernel" not in sys.modules and SCRIPT_FILE is not None:
+if __name__ == "__main__":
     main()
