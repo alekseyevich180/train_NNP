@@ -10,7 +10,7 @@ import numpy as np
 from ase import Atoms, units
 from ase.calculators.calculator import Calculator, all_changes
 from ase.constraints import FixAtoms
-from ase.data import vdw_radii
+from ase.data import covalent_radii, vdw_radii
 from ase.io import Trajectory, read, write
 from ase.md.nvtberendsen import NVTBerendsen
 from ase.md.velocitydistribution import MaxwellBoltzmannDistribution
@@ -32,12 +32,12 @@ CONFIG = {
         "output_root": "acid_AIMD_dataset",
         "restart_from": None,
         "pbc": True,
-        "pair_mode": "template",
+        "pair_mode": "functional-cc-and-co",
         "reactive_pairs": "0-10",
         "reactive_symbols": "C-O",
         "pair_cutoff_ang": 4.0,
         "template_dir": "interm",
-        "template_bond_symbols": "C-O,C=C,C-C",
+        "template_bond_symbols": "C-O,C=C",
         "template_bond_cutoff_ang": 2.2,
         "template_c_c_double_range_ang": (1.15, 1.45),
         "template_c_c_single_range_ang": (1.45, 1.70),
@@ -46,6 +46,8 @@ CONFIG = {
         "functional_c_c_pair_cutoff_ang": 4.0,
         "template_pair_source": "functional-cc-and-co",
         "template_target_mode": "min",
+        "target_c_c_bond_ang": 1.34,
+        "target_c_o_bond_ang": 1.43,
         "double_bond_c_c_range_ang": (1.15, 1.45),
         "existing_c_o_bond_cutoff_ang": 1.65,
         "o_h_bond_cutoff_ang": 1.20,
@@ -69,11 +71,20 @@ CONFIG = {
         "calc_mode": "PBE_U_PLUS_D3",
     },
     "tdbb": {
-        "gamma": 1.0,
-        "f1_max": 250.0,
-        "f2": 10.0,
+        "gamma": 5.0,
+        "f1_max": 300.0,
+        "f2": 2.0,
         "target_scale": 0.60,
         "default_target": 1.5,
+    },
+    "interface_partition": {
+        "molecule_seed_symbols": "C,H",
+        "molecule_symbols": "C,H,O,N,S",
+        "molecule_bond_symbols": "C",
+        "surface_symbols": "Zn,O",
+        "bond_cutoff_scale": 1.25,
+        "min_bond_cutoff_ang": 0.7,
+        "max_bond_cutoff_ang": 2.4,
     },
     "output": {
         "save_interval": 100,
@@ -152,6 +163,17 @@ class TemplateData:
     target_by_symbol_pair: dict[str, float]
     distances_by_symbol_pair: dict[str, tuple[float, ...]]
     names: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class InterfacePartitionConfig:
+    molecule_seed_symbols: tuple[str, ...]
+    molecule_symbols: tuple[str, ...]
+    molecule_bond_symbols: tuple[str, ...]
+    surface_symbols: tuple[str, ...]
+    bond_cutoff_scale: float
+    min_bond_cutoff_ang: float
+    max_bond_cutoff_ang: float
 
 
 class TDBBBias:
@@ -446,6 +468,92 @@ def parse_pairs(pair_text: str) -> list[tuple[int, int]]:
     return pairs
 
 
+def parse_symbol_list(text: str | Sequence[str] | None) -> tuple[str, ...]:
+    if text is None:
+        return ()
+    if isinstance(text, str):
+        return tuple(item.strip() for item in text.split(",") if item.strip())
+    return tuple(str(item).strip() for item in text if str(item).strip())
+
+
+def make_interface_partition_config(args: argparse.Namespace) -> InterfacePartitionConfig:
+    return InterfacePartitionConfig(
+        molecule_seed_symbols=parse_symbol_list(args.molecule_seed_symbols),
+        molecule_symbols=parse_symbol_list(args.molecule_symbols),
+        molecule_bond_symbols=parse_symbol_list(args.molecule_bond_symbols),
+        surface_symbols=parse_symbol_list(args.surface_symbols),
+        bond_cutoff_scale=args.interface_bond_cutoff_scale,
+        min_bond_cutoff_ang=args.interface_min_cutoff,
+        max_bond_cutoff_ang=args.interface_max_cutoff,
+    )
+
+
+def covalent_cutoff(atoms: Atoms, i: int, j: int, config: InterfacePartitionConfig) -> float:
+    numbers = atoms.get_atomic_numbers()
+    ri = float(covalent_radii[numbers[i]])
+    rj = float(covalent_radii[numbers[j]])
+    if not np.isfinite(ri) or not np.isfinite(rj) or ri <= 0.0 or rj <= 0.0:
+        return config.max_bond_cutoff_ang
+    cutoff = config.bond_cutoff_scale * (ri + rj)
+    return min(max(cutoff, config.min_bond_cutoff_ang), config.max_bond_cutoff_ang)
+
+
+def detect_molecule_indices(atoms: Atoms, config: InterfacePartitionConfig) -> set[int]:
+    symbols = atoms.get_chemical_symbols()
+    allowed = set(config.molecule_symbols)
+    molecule = {
+        index
+        for index, symbol in enumerate(symbols)
+        if symbol in config.molecule_seed_symbols and symbol in allowed
+    }
+    if not molecule:
+        raise ValueError(
+            "No molecule seed atoms were found. Adjust molecule_seed_symbols "
+            "or use manual pairs."
+        )
+
+    changed = True
+    while changed:
+        changed = False
+        for i, symbol_i in enumerate(symbols):
+            if i in molecule or symbol_i not in allowed:
+                continue
+            for j in tuple(molecule):
+                if float(atoms.get_distance(i, j, mic=True)) <= covalent_cutoff(atoms, i, j, config):
+                    molecule.add(i)
+                    changed = True
+                    break
+
+    return molecule
+
+
+def detect_molecule_surface_c_o_indices(
+    atoms: Atoms,
+    args: argparse.Namespace,
+) -> tuple[set[int], list[int], set[int]]:
+    config = make_interface_partition_config(args)
+    molecule_indices = detect_molecule_indices(atoms, config)
+    symbols = atoms.get_chemical_symbols()
+    molecule_carbons = {
+        index
+        for index in molecule_indices
+        if symbols[index] in config.molecule_bond_symbols
+    }
+    surface_oxygens = [
+        index
+        for index, symbol in enumerate(symbols)
+        if index not in molecule_indices and symbol == "O" and symbol in config.surface_symbols
+    ]
+    if not molecule_carbons:
+        raise ValueError("No organic molecule carbon atoms were found for C-O acceleration.")
+    if not surface_oxygens:
+        raise ValueError(
+            "No surface O atoms were found outside the organic molecule partition. "
+            "Adjust surface_symbols/molecule partition cutoffs or use manual pairs."
+        )
+    return molecule_carbons, surface_oxygens, molecule_indices
+
+
 def parse_symbol_pair(symbol_pair_text: str) -> tuple[str, str]:
     item = symbol_pair_text.strip()
     if "=" in item:
@@ -514,6 +622,31 @@ def make_symbol_pairs(atoms: Atoms, symbol_pair_text: str, cutoff_ang: float) ->
             f"No {symbol_a}-{symbol_b} pairs were found within {cutoff_ang:.3f} A. "
             "Increase pair_cutoff_ang or specify pairs manually."
         )
+    return pairs
+
+
+def make_partitioned_symbol_pairs(atoms: Atoms, args: argparse.Namespace) -> list[tuple[int, int]]:
+    symbol_a, symbol_b = parse_symbol_pair(args.symbols)
+    if {symbol_a, symbol_b} != {"C", "O"}:
+        return make_symbol_pairs(atoms, args.symbols, args.pair_cutoff)
+
+    molecule_carbons, surface_oxygens, molecule_indices = detect_molecule_surface_c_o_indices(atoms, args)
+    pairs: list[tuple[int, int]] = []
+    for c_index in sorted(molecule_carbons):
+        for o_index in surface_oxygens:
+            distance = float(atoms.get_distance(c_index, o_index, mic=True))
+            if distance <= args.pair_cutoff:
+                pairs.append((c_index, o_index) if symbol_a == "C" else (o_index, c_index))
+
+    if not pairs:
+        raise ValueError(
+            f"No organic molecule C to surface O pairs were found within {args.pair_cutoff:.3f} A. "
+            "Increase pair_cutoff or specify pairs manually."
+        )
+
+    print(f"Organic molecule atoms: {sorted(molecule_indices)}")
+    print(f"Surface O atoms for C-O acceleration: {surface_oxygens}")
+    print(f"Partitioned C-O candidates: {pairs}")
     return pairs
 
 
@@ -617,23 +750,23 @@ def find_enol_like_oxygen_indices(
 
 def make_double_bond_c_o_pairs(atoms: Atoms, args: argparse.Namespace) -> list[tuple[int, int]]:
     double_bonds = make_double_bond_pairs(atoms, args)
-    oxygen_indices = find_enol_like_oxygen_indices(
-        atoms,
-        double_bonds,
-        args.o_h_cutoff,
-        args.enol_c_o_cutoff,
-    )
-    if not oxygen_indices:
-        raise ValueError(
-            "No enol-like oxygen atoms were found. Adjust o_h_cutoff/enol_c_o_cutoff "
-            "or use --pair-mode symbols/manual."
-        )
+    molecule_carbons, surface_oxygens, molecule_indices = detect_molecule_surface_c_o_indices(atoms, args)
 
     pairs: list[tuple[int, int]] = []
-    double_bond_carbons = sorted({index for pair in double_bonds for index in pair})
+    double_bond_carbons = sorted(
+        index
+        for pair in double_bonds
+        for index in pair
+        if index in molecule_carbons
+    )
+    if not double_bond_carbons:
+        raise ValueError(
+            "C=C bonds were found, but none of their carbon atoms belong to the organic molecule partition. "
+            "Adjust molecule partition settings or use manual pairs."
+        )
 
     for c_index in double_bond_carbons:
-        for o_index in oxygen_indices:
+        for o_index in surface_oxygens:
             c_o_distance = float(atoms.get_distance(c_index, o_index, mic=True))
             if c_o_distance <= args.existing_c_o_cutoff:
                 continue
@@ -642,12 +775,13 @@ def make_double_bond_c_o_pairs(atoms: Atoms, args: argparse.Namespace) -> list[t
 
     if not pairs:
         raise ValueError(
-            "C=C carbons and enol-like oxygens were found, but no new C-O target pairs "
+            "Organic C=C carbons and surface O atoms were found, but no new C-O target pairs "
             f"were within {args.pair_cutoff:.3f} A. Increase pair_cutoff or use manual pairs."
         )
 
     print(f"Detected C=C bonds: {double_bonds}")
-    print(f"Detected enol-like O atoms: {oxygen_indices}")
+    print(f"Organic molecule atoms: {sorted(molecule_indices)}")
+    print(f"Surface O atoms for C-O acceleration: {surface_oxygens}")
     return pairs
 
 
@@ -701,19 +835,20 @@ def make_functional_c_c_pairs(atoms: Atoms, args: argparse.Namespace) -> list[tu
 
 
 def make_functional_c_o_pairs(atoms: Atoms, args: argparse.Namespace) -> list[tuple[int, int]]:
-    symbols = atoms.get_chemical_symbols()
+    molecule_carbons, surface_oxygens, molecule_indices = detect_molecule_surface_c_o_indices(atoms, args)
     functional_carbons = sorted(
-        find_functional_carbon_indices(
+        index
+        for index in find_functional_carbon_indices(
             atoms,
             args.functional_o_c_cutoff,
             args.functional_c_c_shell_cutoff,
         )
+        if index in molecule_carbons
     )
-    oxygen_indices = [i for i, symbol in enumerate(symbols) if symbol == "O"]
     pairs: list[tuple[int, int]] = []
 
     for c_index in functional_carbons:
-        for o_index in oxygen_indices:
+        for o_index in surface_oxygens:
             distance = float(atoms.get_distance(c_index, o_index, mic=True))
             if distance <= args.existing_c_o_cutoff:
                 continue
@@ -721,10 +856,12 @@ def make_functional_c_o_pairs(atoms: Atoms, args: argparse.Namespace) -> list[tu
                 pairs.append((c_index, o_index))
 
     if pairs:
-        print(f"Functional-near C-O candidates: {pairs}")
+        print(f"Organic molecule atoms: {sorted(molecule_indices)}")
+        print(f"Surface O atoms for C-O acceleration: {surface_oxygens}")
+        print(f"Functional-near molecule C to surface O candidates: {pairs}")
     else:
         print(
-            "Warning: no functional-near C-O candidates were found; "
+            "Warning: no functional-near molecule C to surface O candidates were found; "
             "continuing with functional-near C-C candidates only."
         )
     return pairs
@@ -879,16 +1016,58 @@ def get_template_target_key(
     return key
 
 
+def get_pair_target_key(atoms: Atoms, pair: tuple[int, int], args: argparse.Namespace) -> str:
+    symbols = atoms.get_chemical_symbols()
+    key = symbol_pair_key(symbols[pair[0]], symbols[pair[1]])
+    if key == "C-C":
+        return "C=C"
+    if key == "C-O":
+        return "C-O"
+    return "auto"
+
+
+def get_pair_target_distances(
+    atoms: Atoms,
+    pairs: Sequence[tuple[int, int]],
+    args: argparse.Namespace,
+) -> tuple[float, ...]:
+    targets: list[float] = []
+    auto_params = TDBBParameters(
+        gamma_kcal_mol_ps=args.gamma,
+        f1_max_kcal_mol=args.f1_max,
+        f2_inv_ang2=args.f2,
+        target_scale=args.target_scale,
+        default_target_ang=args.default_target,
+    )
+    auto_bias = TDBBBias(atoms, pairs, auto_params)
+    for pair_index, pair in enumerate(pairs):
+        key = get_pair_target_key(atoms, pair, args)
+        if key == "C=C":
+            targets.append(float(args.target_c_c_bond))
+        elif key == "C-O":
+            targets.append(float(args.target_c_o_bond))
+        else:
+            targets.append(auto_bias.target_distances[pair_index])
+    return tuple(targets)
+
+
 def get_reactive_pairs(atoms: Atoms, args: argparse.Namespace) -> list[tuple[int, int]]:
     if args.pair_mode == "manual":
         return parse_pairs(args.pairs)
     if args.pair_mode == "symbols":
-        return make_symbol_pairs(atoms, args.symbols, args.pair_cutoff)
+        return make_partitioned_symbol_pairs(atoms, args)
     if args.pair_mode == "double-bond-co":
         return make_double_bond_c_o_pairs(atoms, args)
-    if args.pair_mode == "template":
-        return get_template_source_pairs(atoms, args)
-    raise ValueError("pair_mode must be 'manual', 'symbols', 'double-bond-co', or 'template'.")
+    if args.pair_mode == "double-bond-and-co":
+        return make_double_bond_and_c_o_pairs(atoms, args)
+    if args.pair_mode == "functional-cc":
+        return make_functional_c_c_pairs(atoms, args)
+    if args.pair_mode == "functional-cc-and-co":
+        return make_functional_c_c_and_c_o_pairs(atoms, args)
+    raise ValueError(
+        "pair_mode must be 'manual', 'symbols', 'double-bond-co', 'double-bond-and-co', "
+        "'functional-cc', or 'functional-cc-and-co'."
+    )
 
 
 def get_template_source_pairs(atoms: Atoms, args: argparse.Namespace) -> list[tuple[int, int]]:
@@ -897,7 +1076,7 @@ def get_template_source_pairs(atoms: Atoms, args: argparse.Namespace) -> list[tu
     if args.template_pair_source == "manual":
         return parse_pairs(args.pairs)
     if args.template_pair_source == "symbols":
-        return make_symbol_pairs(atoms, args.symbols, args.pair_cutoff)
+        return make_partitioned_symbol_pairs(atoms, args)
     if args.template_pair_source == "double-bond-co":
         return make_double_bond_c_o_pairs(atoms, args)
     if args.template_pair_source == "double-bond-and-co":
@@ -933,7 +1112,18 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--output-root", default=CONFIG["system"]["output_root"], help="Root directory for outputs.")
     parser.add_argument("--restart-from", default=CONFIG["system"]["restart_from"], help="Checkpoint directory or latest_checkpoint.txt.")
     parser.add_argument("--template-progress", default=CONFIG["output"]["template_progress"], help="Template progress CSV name.")
-    parser.add_argument("--pair-mode", choices=["manual", "symbols", "double-bond-co", "template"], default=CONFIG["system"]["pair_mode"])
+    parser.add_argument(
+        "--pair-mode",
+        choices=[
+            "manual",
+            "symbols",
+            "double-bond-co",
+            "double-bond-and-co",
+            "functional-cc",
+            "functional-cc-and-co",
+        ],
+        default=CONFIG["system"]["pair_mode"],
+    )
     parser.add_argument("--pairs", default=CONFIG["system"]["reactive_pairs"])
     parser.add_argument("--symbols", default=CONFIG["system"]["reactive_symbols"])
     parser.add_argument("--pair-cutoff", type=float, default=CONFIG["system"]["pair_cutoff_ang"])
@@ -950,6 +1140,8 @@ def parse_args() -> argparse.Namespace:
         default=CONFIG["system"]["template_pair_source"],
     )
     parser.add_argument("--template-target-mode", choices=["min", "mean"], default=CONFIG["system"]["template_target_mode"])
+    parser.add_argument("--target-c-c-bond", type=float, default=CONFIG["system"]["target_c_c_bond_ang"])
+    parser.add_argument("--target-c-o-bond", type=float, default=CONFIG["system"]["target_c_o_bond_ang"])
     parser.add_argument("--double-bond-min", type=float, default=CONFIG["system"]["double_bond_c_c_range_ang"][0])
     parser.add_argument("--double-bond-max", type=float, default=CONFIG["system"]["double_bond_c_c_range_ang"][1])
     parser.add_argument("--existing-c-o-cutoff", type=float, default=CONFIG["system"]["existing_c_o_bond_cutoff_ang"])
@@ -964,6 +1156,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--target-scale", type=float, default=CONFIG["tdbb"]["target_scale"])
     parser.add_argument("--default-target", type=float, default=CONFIG["tdbb"]["default_target"])
     parser.add_argument("--calc-mode", default=CONFIG["pfp"]["calc_mode"])
+    parser.add_argument("--molecule-seed-symbols", default=CONFIG["interface_partition"]["molecule_seed_symbols"])
+    parser.add_argument("--molecule-symbols", default=CONFIG["interface_partition"]["molecule_symbols"])
+    parser.add_argument("--molecule-bond-symbols", default=CONFIG["interface_partition"]["molecule_bond_symbols"])
+    parser.add_argument("--surface-symbols", default=CONFIG["interface_partition"]["surface_symbols"])
+    parser.add_argument("--interface-bond-cutoff-scale", type=float, default=CONFIG["interface_partition"]["bond_cutoff_scale"])
+    parser.add_argument("--interface-min-cutoff", type=float, default=CONFIG["interface_partition"]["min_bond_cutoff_ang"])
+    parser.add_argument("--interface-max-cutoff", type=float, default=CONFIG["interface_partition"]["max_bond_cutoff_ang"])
     args, unknown = parser.parse_known_args()
     if unknown:
         print(f"Ignoring unknown command-line arguments: {unknown}")
@@ -1005,13 +1204,17 @@ def run_simulation(args: argparse.Namespace) -> None:
         atoms.set_constraint(FixAtoms(indices=fixed))
         start_step = 0
 
-    template_data = load_template_data(args) if args.pair_mode == "template" else None
+    template_data = None
     pairs = get_reactive_pairs(atoms, args)
-    target_distances = get_template_target_distances(atoms, pairs, template_data, args) if template_data is not None else None
+    target_distances = (
+        get_template_target_distances(atoms, pairs, template_data, args)
+        if template_data is not None
+        else get_pair_target_distances(atoms, pairs, args)
+    )
     target_keys = (
         [get_template_target_key(atoms, pair, template_data, args) for pair in pairs]
         if template_data is not None
-        else ["auto"] * len(pairs)
+        else [get_pair_target_key(atoms, pair, args) for pair in pairs]
     )
     bias = TDBBBias(atoms, pairs, params, target_distances=target_distances)
     atoms.calc = BiasedCalculator(base_calculator, bias)
