@@ -1,0 +1,20 @@
+{
+  "description": "Manually selected target bonds/motifs. Atom indices are 0-based ASE/Python indices. Use files='all' to apply the same atom-index pattern to every structure in interm.",
+  "structures": [
+    {
+      "files": "all",
+      "bonds": [
+        {"bond_type": "C-O", "i": 136, "j": 289},
+        {"bond_type": "C-O", "i": 288, "j": 292},
+        {"bond_type": "C=C", "i": 288, "j": 289}
+      ],
+      "motifs": [
+        {
+          "name": "enol_surface_adsorption",
+          "atoms": [136, 289, 288, 292],
+          "bond_types": ["Zn-O", "O-C", "C-O"]
+        }
+      ]
+    }
+  ]
+}

@@ -1,2 +1,10 @@
+acid1_relaxed.cif
+acid2_relaxed.cif
+acid3_relaxed.cif
+NEB1.cif
+NEB2.cif
 NEB3.cif
 NEB4.cif
+neb_state5.cif
+neb_state6.cif
+neb_state7.cif
