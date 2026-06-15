@@ -27,7 +27,7 @@ from pfcc_extras.visualize.ase import view_ase_atoms
 print(f"pfp_api_client: {pfp_api_client.__version__}")
 
 # estimator = Estimator(calc_mode=EstimatorCalcMode.CRYSTAL, model_version="latest")
-estimator = Estimator(calc_mode=EstimatorCalcMode.CRYSTAL_U0, model_version="v3.0.0")
+estimator = Estimator(calc_mode=EstimatorCalcMode.CRYSTAL_U0, model_version="v8.0.0")
 calculator = ASECalculator(estimator)
 
 def get_opt_energy(atoms, fmax=0.001, opt_mode: str = "normal"):    
