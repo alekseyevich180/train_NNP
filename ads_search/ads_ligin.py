@@ -23,11 +23,11 @@ CONFIG = {
     },
     "calculator": {
         "calc_mode": EstimatorCalcMode.CRYSTAL_U0,
-        "model_version": "v3.0.0",
+        "model_version": "v8.0.0",
     },
     "optimization": {
         "n_trials": 300,
-        "fmax": 1e-4,
+        "fmax": 0.05,
         "max_steps": 200,
     },
     "adsorption": {
