@@ -28,7 +28,7 @@ CONFIG = {
     "optimization": {
         "n_trials": 300,
         "fmax": 0.05,
-        "max_steps": 200,
+        "max_steps": 1000,
     },
     "adsorption": {
         "z_height_range": [2.0, 6.0],

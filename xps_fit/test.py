@@ -1,27 +1,61 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import argparse
+import csv
+import json
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Sequence
 
 import matplotlib.pyplot as plt
 import numpy as np
-from scipy.interpolate import interp1d
-from scipy.optimize import curve_fit
+import optuna
+
+
+# Edit this block directly or override the values with command-line arguments.
+FIT_CONFIG = {
+    # Only data inside this range are used for fitting.
+    "fit_range": [776.0, 784.0],
+    "n_peaks": 2,
+    # Leave empty to use Peak 1, Peak 2, ...
+    "peak_labels": [],
+    # One [minimum, maximum] range per peak. Leave empty to search the full x range.
+    # Example for two peaks: [[779.0, 780.5], [781.0, 782.5]]
+    "center_ranges": [],
+    "peak_width_range": [0.1, 3.0],  # Gaussian sigma, in x-axis units (usually eV)
+    "peak_amplitude_fraction_range": [0.0, 1.5],
+    "minimum_peak_separation": 0.1,
+    # Values above zero give the high-intensity peak region more influence.
+    "high_intensity_weight": 3.0,
+    "n_trials": 2000,
+    "seed": 7,
+    "timeout": None,
+    "n_startup_trials": 100,
+    "spectrum_title": "XPS peak fitting",
+}
+
+
+@dataclass(frozen=True)
+class PeakFit:
+    label: str
+    amplitude: float
+    center: float
+    sigma: float
+    area: float
+    area_ratio: float
+    values: np.ndarray
 
 
 @dataclass(frozen=True)
 class FitResult:
-    params: np.ndarray
-    covariance: np.ndarray
     x: np.ndarray
     y: np.ndarray
     background: np.ndarray
-    co2: np.ndarray
-    co3: np.ndarray
+    background_params: tuple[float, float, float, float]
+    peaks: tuple[PeakFit, ...]
     fitted: np.ndarray
-    co2_ratio: float
-    co3_ratio: float
+    normalized_rmse: float
+    rmse: float
     r2: float
 
 
@@ -29,7 +63,7 @@ def configure_plot() -> None:
     plt.rcParams.update(
         {
             "font.family": "Arial",
-            "font.size": 18,
+            "font.size": 16,
             "axes.linewidth": 1.8,
             "xtick.direction": "in",
             "ytick.direction": "in",
@@ -37,8 +71,19 @@ def configure_plot() -> None:
     )
 
 
-def gaussian(x: np.ndarray, amp: float, cen: float, wid: float) -> np.ndarray:
-    return amp * np.exp(-((x - cen) ** 2) / (2 * wid**2))
+def gaussian(x: np.ndarray, amplitude: float, center: float, sigma: float) -> np.ndarray:
+    return amplitude * np.exp(-0.5 * ((x - center) / sigma) ** 2)
+
+
+def sigmoid_background(
+    x: np.ndarray,
+    offset: float,
+    amplitude: float,
+    center: float,
+    width: float,
+) -> np.ndarray:
+    exponent = np.clip(-(x - center) / width, -700.0, 700.0)
+    return offset + amplitude / (1.0 + np.exp(exponent))
 
 
 def sort_xy(x: np.ndarray, y: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
@@ -46,169 +91,332 @@ def sort_xy(x: np.ndarray, y: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
     y = np.asarray(y, dtype=float)
     if x.shape != y.shape:
         raise ValueError(f"x and y must have the same shape, got {x.shape} and {y.shape}")
+    if x.ndim != 1:
+        raise ValueError("x and y must be one-dimensional arrays.")
     order = np.argsort(x)
     return x[order], y[order]
 
 
-def adaptive_background(
+def parse_peak_labels(text: str | None, n_peaks: int) -> list[str]:
+    if text:
+        labels = [item.strip() for item in text.split(",") if item.strip()]
+    else:
+        labels = [str(item).strip() for item in FIT_CONFIG["peak_labels"] if str(item).strip()]
+    if not labels:
+        return [f"Peak {index + 1}" for index in range(n_peaks)]
+    if len(labels) != n_peaks:
+        raise ValueError(f"Expected {n_peaks} peak labels, received {len(labels)}.")
+    return labels
+
+
+def parse_fit_range(
+    text: str | None,
+    data_min: float,
+    data_max: float,
+) -> tuple[float, float]:
+    if text:
+        values = text.strip().split(":")
+        if len(values) != 2:
+            raise ValueError("fit-range must use min:max, for example 775:785.")
+        lower, upper = sorted((float(values[0]), float(values[1])))
+    else:
+        configured = FIT_CONFIG["fit_range"]
+        if len(configured) != 2:
+            raise ValueError("FIT_CONFIG['fit_range'] must contain [minimum, maximum].")
+        lower, upper = sorted((float(configured[0]), float(configured[1])))
+
+    if lower < data_min or upper > data_max or lower == upper:
+        raise ValueError(
+            f"Fit range [{lower}, {upper}] must lie inside the data range "
+            f"[{data_min}, {data_max}]."
+        )
+    return lower, upper
+
+
+def select_fit_region(
     x: np.ndarray,
-    y_data: np.ndarray,
-    x1_pos: float,
-    x2_pos: float,
-    bg_a: float,
-    bg_b: float,
-    bg_c: float,
-) -> np.ndarray:
-    lower = x1_pos - 3.3
-    upper = x2_pos + 5.0
-    transition_width = 0.7
-
-    bg_sigmoid = bg_a / (1 + np.exp(-(x - bg_b) / bg_c))
-    spline = interp1d(x, y_data, kind="cubic", bounds_error=False, fill_value="extrapolate")
-    bg_spline = spline(x)
-
-    w_left = 1 / (1 + np.exp(-(x - lower) / transition_width))
-    w_right = 1 / (1 + np.exp((x - upper) / transition_width))
-    weight = w_left * w_right
-    return weight * bg_sigmoid + (1 - weight) * bg_spline
+    y: np.ndarray,
+    fit_range: tuple[float, float],
+) -> tuple[np.ndarray, np.ndarray]:
+    lower, upper = fit_range
+    mask = (x >= lower) & (x <= upper)
+    selected_x = x[mask]
+    selected_y = y[mask]
+    if len(selected_x) < 5:
+        raise ValueError(
+            f"Only {len(selected_x)} data points fall inside fit range [{lower}, {upper}]."
+        )
+    return selected_x, selected_y
 
 
-def make_model(y_data: np.ndarray):
-    def model(
-        x: np.ndarray,
-        bg_a: float,
-        bg_b: float,
-        bg_c: float,
-        a1: float,
-        c1: float,
-        w1: float,
-        a2: float,
-        c2: float,
-        w2: float,
-    ) -> np.ndarray:
-        bg = adaptive_background(x, y_data, c1, c2, bg_a, bg_b, bg_c)
-        return bg + gaussian(x, a1, c1, w1) + gaussian(x, a2, c2, w2)
+def parse_center_ranges(
+    text: str | None,
+    n_peaks: int,
+    x_min: float,
+    x_max: float,
+) -> list[tuple[float, float]]:
+    if text:
+        ranges: list[Sequence[float]] = []
+        for item in text.split(","):
+            values = item.strip().split(":")
+            if len(values) != 2:
+                raise ValueError(
+                    "Center ranges must use min:max pairs, for example 779:780.5,781:782.5."
+                )
+            ranges.append([float(values[0]), float(values[1])])
+    else:
+        ranges = FIT_CONFIG["center_ranges"]
 
-    return model
+    if not ranges:
+        return [(x_min, x_max) for _ in range(n_peaks)]
+    if len(ranges) != n_peaks:
+        raise ValueError(f"Expected {n_peaks} center ranges, received {len(ranges)}.")
+
+    parsed: list[tuple[float, float]] = []
+    for index, values in enumerate(ranges, start=1):
+        if len(values) != 2:
+            raise ValueError(f"Center range {index} must contain exactly two values.")
+        lower, upper = sorted((float(values[0]), float(values[1])))
+        if lower < x_min or upper > x_max or lower == upper:
+            raise ValueError(
+                f"Center range {index} [{lower}, {upper}] must lie inside "
+                f"the data range [{x_min}, {x_max}]."
+            )
+        parsed.append((lower, upper))
+    return parsed
 
 
-def fit_co_2p(x: np.ndarray, y: np.ndarray) -> FitResult:
+def model_components(
+    x: np.ndarray,
+    background_params: Sequence[float],
+    peak_params: Sequence[Sequence[float]],
+) -> tuple[np.ndarray, list[np.ndarray], np.ndarray]:
+    background = sigmoid_background(x, *background_params)
+    peaks = [gaussian(x, *params) for params in peak_params]
+    fitted = background + np.sum(peaks, axis=0)
+    return background, peaks, fitted
+
+
+def fit_xps_peaks(
+    x: np.ndarray,
+    y: np.ndarray,
+    n_peaks: int,
+    labels: Sequence[str],
+    center_ranges: Sequence[tuple[float, float]],
+    n_trials: int,
+    seed: int,
+    timeout: float | None,
+    minimum_peak_separation: float,
+    high_intensity_weight: float,
+) -> tuple[FitResult, optuna.Study]:
     x, y = sort_xy(x, y)
-    local_max = float(np.max(y))
-    if local_max <= 0:
-        raise ValueError("Intensity maximum must be positive for bounded peak fitting.")
+    if n_peaks < 1:
+        raise ValueError("n_peaks must be at least 1.")
+    if len(labels) != n_peaks or len(center_ranges) != n_peaks:
+        raise ValueError("Peak labels and center ranges must match n_peaks.")
+    if n_trials < 1:
+        raise ValueError("n_trials must be at least 1.")
+    if minimum_peak_separation < 0.0:
+        raise ValueError("minimum_peak_separation cannot be negative.")
+    if high_intensity_weight < 0.0:
+        raise ValueError("high_intensity_weight cannot be negative.")
 
-    p0 = [
-        local_max * 0.2,
-        780.5,
-        1.0,
-        local_max * 0.6,
-        780.0,
-        1.2,
-        local_max * 0.4,
-        781.5,
-        1.2,
-    ]
-    bounds = (
-        [0, 775, 0.1, 0, 779.5, 0.5, 0, 781.0, 0.5],
-        [local_max, 785, 3.0, np.inf, 780.5, 2.5, np.inf, 782.5, 2.5],
+    y_min = float(np.min(y))
+    y_max = float(np.max(y))
+    intensity_scale = max(float(np.ptp(y)), 1.0)
+    point_weights = 1.0 + high_intensity_weight * (y - y_min) / intensity_scale
+    x_span = float(np.ptp(x))
+    if x_span <= 0.0:
+        raise ValueError("The x-axis must contain more than one unique value.")
+    unique_x = np.unique(x)
+    minimum_x_step = float(np.min(np.diff(unique_x))) if len(unique_x) > 1 else x_span
+
+    amplitude_bounds = [float(value) for value in FIT_CONFIG["peak_amplitude_fraction_range"]]
+    width_bounds = [float(value) for value in FIT_CONFIG["peak_width_range"]]
+    if amplitude_bounds[0] < 0.0 or amplitude_bounds[0] > amplitude_bounds[1]:
+        raise ValueError("Invalid peak_amplitude_fraction_range.")
+    if width_bounds[0] <= 0.0 or width_bounds[0] >= width_bounds[1]:
+        raise ValueError("Invalid peak_width_range.")
+
+    def parameters_from_trial(
+        trial: optuna.Trial,
+    ) -> tuple[tuple[float, float, float, float], list[tuple[float, float, float]]]:
+        background_params = (
+            trial.suggest_float("background_offset", y_min - 0.25 * intensity_scale, y_max),
+            intensity_scale * trial.suggest_float("background_amplitude_fraction", -1.5, 1.5),
+            trial.suggest_float("background_center", float(x[0]), float(x[-1])),
+            trial.suggest_float(
+                "background_width",
+                max(minimum_x_step, 1e-6),
+                max(x_span, minimum_x_step * 1.01),
+                log=True,
+            ),
+        )
+        peak_params = []
+        for index, center_range in enumerate(center_ranges, start=1):
+            peak_params.append(
+                (
+                    intensity_scale
+                    * trial.suggest_float(
+                        f"peak_{index}_amplitude_fraction", *amplitude_bounds
+                    ),
+                    trial.suggest_float(f"peak_{index}_center", *center_range),
+                    trial.suggest_float(f"peak_{index}_sigma", *width_bounds),
+                )
+            )
+        return background_params, peak_params
+
+    def objective(trial: optuna.Trial) -> float:
+        background_params, peak_params = parameters_from_trial(trial)
+        centers = np.sort([params[1] for params in peak_params])
+        if len(centers) > 1:
+            closest_distance = float(np.min(np.diff(centers)))
+            if closest_distance < minimum_peak_separation:
+                return 1_000.0 + (minimum_peak_separation - closest_distance) / x_span
+
+        _, _, fitted = model_components(x, background_params, peak_params)
+        if not np.all(np.isfinite(fitted)):
+            return float("inf")
+        normalized_residual = (y - fitted) / intensity_scale
+        return float(
+            np.sqrt(np.sum(point_weights * normalized_residual**2) / np.sum(point_weights))
+        )
+
+    sampler = optuna.samplers.TPESampler(
+        seed=seed,
+        n_startup_trials=min(int(FIT_CONFIG["n_startup_trials"]), n_trials),
+        multivariate=True,
+    )
+    optuna.logging.set_verbosity(optuna.logging.WARNING)
+    study = optuna.create_study(direction="minimize", sampler=sampler)
+
+    initial_trial = {
+        "background_offset": y_min,
+        "background_amplitude_fraction": (float(y[-1]) - float(y[0])) / intensity_scale,
+        "background_center": float(np.mean(x)),
+        "background_width": max(0.1 * x_span, minimum_x_step),
+    }
+    for index, center_range in enumerate(center_ranges, start=1):
+        initial_trial[f"peak_{index}_amplitude_fraction"] = min(1.0, 1.0 / n_peaks)
+        initial_trial[f"peak_{index}_center"] = float(np.mean(center_range))
+        initial_trial[f"peak_{index}_sigma"] = float(np.mean(width_bounds))
+    study.enqueue_trial(initial_trial)
+    study.optimize(objective, n_trials=n_trials, timeout=timeout)
+
+    background_params, raw_peak_params = parameters_from_trial(study.best_trial)
+    ordered = sorted(
+        zip(labels, raw_peak_params, strict=True),
+        key=lambda item: item[1][1],
+    )
+    ordered_labels = [item[0] for item in ordered]
+    ordered_params = [item[1] for item in ordered]
+    background, peak_values, fitted = model_components(x, background_params, ordered_params)
+
+    areas = np.array([float(np.trapz(values, x)) for values in peak_values])
+    total_area = float(np.sum(areas))
+    if total_area <= 0.0:
+        raise ValueError("The total fitted peak area is not positive.")
+    ratios = areas / total_area
+
+    peaks = tuple(
+        PeakFit(
+            label=label,
+            amplitude=float(params[0]),
+            center=float(params[1]),
+            sigma=float(params[2]),
+            area=float(area),
+            area_ratio=float(ratio),
+            values=values,
+        )
+        for label, params, area, ratio, values in zip(
+            ordered_labels,
+            ordered_params,
+            areas,
+            ratios,
+            peak_values,
+            strict=True,
+        )
     )
 
-    model = make_model(y)
-    popt, pcov = curve_fit(model, x, y, p0=p0, bounds=bounds, maxfev=20000)
-    bg_a, bg_b, bg_c, a1, c1, w1, a2, c2, w2 = popt
-
-    background = adaptive_background(x, y, c1, c2, bg_a, bg_b, bg_c)
-    co2 = gaussian(x, a1, c1, w1)
-    co3 = gaussian(x, a2, c2, w2)
-    fitted = background + co2 + co3
-
-    area1 = float(np.trapz(co2, x))
-    area2 = float(np.trapz(co3, x))
-    total_area = area1 + area2
-    if total_area <= 0:
-        raise ValueError("Peak areas are not positive; check initial guesses and bounds.")
-
-    ss_res = float(np.sum((y - fitted) ** 2))
+    residual = y - fitted
+    ss_res = float(np.sum(residual**2))
     ss_tot = float(np.sum((y - np.mean(y)) ** 2))
+    rmse = float(np.sqrt(np.mean(residual**2)))
     r2 = 1.0 - ss_res / ss_tot if ss_tot else float("nan")
-
-    return FitResult(
-        params=popt,
-        covariance=pcov,
+    result = FitResult(
         x=x,
         y=y,
         background=background,
-        co2=co2,
-        co3=co3,
+        background_params=tuple(float(value) for value in background_params),
+        peaks=peaks,
         fitted=fitted,
-        co2_ratio=area1 / total_area,
-        co3_ratio=area2 / total_area,
+        normalized_rmse=rmse / intensity_scale,
+        rmse=rmse,
         r2=r2,
     )
+    return result, study
 
 
-def plot_fit(result: FitResult, output: Path | None = None, show: bool = False) -> None:
-    _, _, _, _, c1, _, _, c2, _ = result.params
-    fig, ax = plt.subplots(figsize=(5.5, 5.5))
+def plot_fit(
+    result: FitResult,
+    raw_x: np.ndarray,
+    raw_y: np.ndarray,
+    fit_range: tuple[float, float],
+    title: str,
+    reverse_x: bool,
+    output: Path | None,
+    show: bool,
+) -> None:
+    fig, ax = plt.subplots(figsize=(6.5, 5.5))
+    colors = plt.colormaps["tab10"].resampled(max(len(result.peaks), 1))
 
-    ax.plot(result.x, result.y, "o", ms=3.5, color="#F4A261", alpha=0.6, label="Raw Data")
-    ax.plot(result.x, result.fitted, "-", lw=2, color="black", label=f"Fit ($R^2$={result.r2:.3f})")
-    ax.plot(
-        result.x,
-        result.co2 + result.background,
-        "--",
-        lw=2,
-        color="#4C72B0",
-        label=f"$Co^{{+2}}$ ({c1:.2f} eV)",
+    raw_x, raw_y = sort_xy(raw_x, raw_y)
+    ax.plot(raw_x, raw_y, "o", ms=3.5, color="#F4A261", alpha=0.6, label="Raw data")
+    ax.axvspan(
+        fit_range[0],
+        fit_range[1],
+        color="gray",
+        alpha=0.07,
+        label="Fit region",
     )
-    ax.plot(
-        result.x,
-        result.co3 + result.background,
-        "--",
-        lw=2,
-        color="#55A868",
-        label=f"$Co^{{+3}}$ ({c2:.2f} eV)",
-    )
+    ax.plot(result.x, result.fitted, "-", lw=2.2, color="black", label=f"Fit ($R^2$={result.r2:.4f})")
+    ax.plot(result.x, result.background, ":", lw=2, color="gray", label="Background")
 
-    mask = (result.x >= 768) & (result.x <= 785)
-    ax.fill_between(
-        result.x[mask],
-        result.background[mask],
-        (result.co2 + result.background)[mask],
-        color="#4C72B0",
-        alpha=0.4,
-    )
-    ax.fill_between(
-        result.x[mask],
-        result.background[mask],
-        (result.co3 + result.background)[mask],
-        color="#55A868",
-        alpha=0.4,
-    )
+    for index, peak in enumerate(result.peaks):
+        color = colors(index)
+        ax.plot(
+            result.x,
+            result.background + peak.values,
+            "--",
+            lw=2,
+            color=color,
+            label=f"{peak.label} ({peak.center:.2f})",
+        )
+        ax.fill_between(
+            result.x,
+            result.background,
+            result.background + peak.values,
+            color=color,
+            alpha=0.28,
+        )
 
-    ax.set_xlim(float(np.max(result.x)), 769)
-    ax.set_ylim(-50, float(np.max(result.y)) * 1.15)
-    ax.set_title("Co 2p", fontsize=20)
-    ax.set_box_aspect(1)
-    ax.set_xlabel("Binding Energy (eV)", fontsize=18)
-    ax.set_ylabel("Intensity (a.u.)", fontsize=18)
-    ax.legend(loc="upper left", frameon=False, fontsize=11)
-    ax.text(
-        0.98,
-        0.92,
-        f"$Co^{{+2}}$ = {result.co2_ratio:.2f}\n$Co^{{+3}}$ = {result.co3_ratio:.2f}",
-        transform=ax.transAxes,
-        ha="right",
-        va="top",
-        fontsize=14,
-    )
-
-    for spine in ax.spines.values():
-        spine.set_visible(True)
-
+    x_margin = 0.02 * float(np.ptp(raw_x))
+    if reverse_x:
+        ax.set_xlim(float(np.max(raw_x)) + x_margin, float(np.min(raw_x)) - x_margin)
+    else:
+        ax.set_xlim(float(np.min(raw_x)) - x_margin, float(np.max(raw_x)) + x_margin)
+    y_span = max(float(np.ptp(raw_y)), 1.0)
+    ax.set_ylim(float(np.min(raw_y)) - 0.08 * y_span, float(np.max(raw_y)) + 0.15 * y_span)
+    ax.set_title(title, fontsize=19)
+    ax.set_xlabel("Binding energy (eV)")
+    ax.set_ylabel("Intensity (a.u.)")
+    ax.legend(loc="best", frameon=False, fontsize=9)
+    ratio_text = "\n".join(f"{peak.label}: {peak.area_ratio:.1%}" for peak in result.peaks)
+    ax.text(0.98, 0.97, ratio_text, transform=ax.transAxes, ha="right", va="top", fontsize=11)
     fig.tight_layout()
+
     if output is not None:
+        output.parent.mkdir(parents=True, exist_ok=True)
         fig.savefig(output, dpi=300, bbox_inches="tight")
     if show:
         plt.show()
@@ -217,83 +425,165 @@ def plot_fit(result: FitResult, output: Path | None = None, show: bool = False) 
 
 
 def write_components(result: FitResult, output: Path) -> None:
-    arr = np.column_stack(
-        [
-            result.x,
-            result.y,
-            result.background,
-            result.co2,
-            result.co3,
-            result.fitted,
-        ]
-    )
+    columns = [result.x, result.y, result.background]
+    headers = ["binding_energy_eV", "intensity", "background"]
+    for index, peak in enumerate(result.peaks, start=1):
+        columns.append(peak.values)
+        headers.append(f"peak_{index}")
+    columns.append(result.fitted)
+    headers.append("fitted")
+    output.parent.mkdir(parents=True, exist_ok=True)
     np.savetxt(
         output,
-        arr,
+        np.column_stack(columns),
         delimiter=",",
-        header="binding_energy_eV,intensity,background,co2_peak,co3_peak,fitted",
+        header=",".join(headers),
         comments="",
     )
 
-# ========= 数据 =========
-data = np.array([
-[788.895,68.8616],[788.795,71.3104],[788.695,74.1288],[788.595,79.4152],
-[788.495,85.2177],[788.395,91.2016],[788.295,96.5239],[788.195,100.945],
-[788.095,104.323],[787.995,106.709],[787.895,108.173],[787.795,108.713],
-[787.695,108.22],[787.595,106.561],[787.495,103.662],[787.395,99.5645],
-[787.295,94.4949],[787.195,88.8014],[787.095,82.8828],[786.995,77.1107],
-[786.895,71.7684],[786.795,67.0181],[786.695,62.9488],[786.595,59.5957],
-[786.495,56.9476],[786.395,54.9588],[786.295,53.5341],[786.195,52.5065],
-[786.095,51.6568],[785.995,50.7569],[785.895,49.5974],[785.795,48.0197],
-[785.695,45.926],[785.595,43.2672],[785.495,40.0313],[785.395,36.2354],
-[785.295,31.9522],[785.195,27.321],[785.095,22.559],[784.995,17.9235],
-[784.895,13.6887],[784.795,10.0702],[784.695,7.19845],[784.595,5.0835],
-[784.495,3.67347],[784.395,2.87842],[784.295,2.61186],[784.195,2.80432],
-[784.095,3.44219],[783.995,4.50849],[783.895,5.97888],[783.795,7.84877],
-[783.695,10.1573],[783.595,12.9788],[783.495,16.47],[783.395,20.8505],
-[783.295,26.3423],[783.195,33.1028],[783.095,41.198],[782.995,50.5707],
-[782.895,61.0709],[782.795,72.5088],[782.695,84.7463],[782.595,97.7315],
-[782.495,111.533],[782.395,126.315],[782.295,142.317],[782.195,159.771],
-[782.095,178.902],[781.995,199.9],[781.895,222.935],[781.795,248.168],
-[781.695,275.804],[781.595,306.078],[781.495,339.26],[781.395,375.622],
-[781.295,415.403],[781.195,458.727],[781.095,505.548],[780.995,555.602],
-[780.895,608.416],[780.795,663.318],[780.695,719.527],[780.595,776.258],
-[780.495,832.799],[780.395,888.524],[780.295,942.901],[780.195,995.428],
-[780.095,1045.53],[779.995,1092.47],[779.895,1135.38],[779.795,1173.29],
-[779.695,1205.13],[779.595,1229.87],[779.495,1246.55],[779.395,1254.24],
-[779.295,1252.11],[779.195,1239.35],[779.095,1215.35],[778.995,1179.73],
-[778.895,1132.61],[778.795,1074.76],[778.695,1007.67],[778.595,933.432],
-[778.495,854.627],[778.395,773.955],[778.295,693.948],[778.195,616.744],
-[778.095,544.004],[777.995,476.881],[777.895,416.104],[777.795,362.084],
-[777.695,314.969],[777.595,274.634],[777.495,240.692],[777.395,212.507],
-[777.295,189.213],[777.195,169.792],[777.095,153.225],[776.995,138.627],
-[776.895,125.33],[776.795,112.949],[776.695,101.421],[776.595,90.913],
-[776.495,81.7002],[776.395,74.0763],[776.295,68.2305],[776.195,64.1408],
-[776.095,61.5609],[775.995,60.0968],[775.895,59.2521],[775.795,58.541],
-[775.695,57.583],[775.595,56.1604],[775.495,54.1897],[775.395,51.7373],
-[775.295,48.9557],[775.195,46.0483],[775.095,43.2106],[774.995,40.6218],
-[774.895,38.3637],[774.795,36.4147],[774.695,34.6338],[774.595,32.8025],
-[774.495,30.6486],[774.395,27.9663],[774.295,24.6764],[774.195,20.8656],
-[774.095,16.7653],[773.995,12.7097],[773.895,9.02295],[773.795,5.93882],
-[773.695,3.54135],[773.595,1.76232],[773.495,0.434224],[773.395,-0.643693],
-[773.295,-1.66073],[773.195,-2.73097],[773.095,-3.88482],[772.995,-5.11838],
-[772.895,-6.40973],[772.795,-7.7091],[772.695,-8.98177],[772.595,-10.1917],
-[772.495,-11.2665],[772.395,-12.0936],[772.295,-12.5507],[772.195,-12.49],
-[772.095,-11.775],[771.995,-10.3042],[771.895,-8.03231],[771.795,-4.96065],
-[771.695,-1.14804],[771.595,3.29074],[771.495,8.17421],[771.395,13.2605],
-[771.295,18.2381],[771.195,22.7401],[771.095,26.3988],[770.995,28.9031],
-[770.895,30.0587],[770.795,29.8341],[770.695,28.3599],[770.595,25.8735],
-[770.495,22.6586],[770.395,18.9463],[770.295,14.8673],[770.195,10.4684],
-[770.095,5.74367],[769.995,0.680027],[769.895,-4.65408],[769.795,-10.1009],
-[769.695,-15.4683],[769.595,-20.5456],[769.495,-25.1467],[769.395,-29.1498],
-[769.295,-32.5238],[769.195,-35.1646],[769.095,-37.1628],[768.995,-38.1552],
-[768.895,-38.9231]])
+
+def plot_optimization_history(study: optuna.Study, output: Path) -> None:
+    completed = [trial for trial in study.trials if trial.value is not None]
+    if not completed:
+        raise ValueError("No completed Optuna trials are available for plotting.")
+    trial_numbers = np.array([trial.number for trial in completed], dtype=int)
+    values = np.array([float(trial.value) for trial in completed], dtype=float)
+    best_so_far = np.minimum.accumulate(values)
+
+    fig, ax = plt.subplots(figsize=(7.0, 4.5))
+    ax.scatter(trial_numbers, values, s=12, alpha=0.3, label="Trial")
+    ax.plot(trial_numbers, best_so_far, color="black", lw=2, label="Best so far")
+    ax.set_xlabel("Optuna trial")
+    ax.set_ylabel("Weighted normalized RMSE")
+    ax.legend(frameon=False)
+    fig.tight_layout()
+    output.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(output, dpi=300, bbox_inches="tight")
+    plt.close(fig)
+
+
+def write_summary(result: FitResult, study: optuna.Study, output: Path) -> None:
+    offset, amplitude, center, width = result.background_params
+    summary = {
+        "best_trial": study.best_trial.number,
+        "n_peaks": len(result.peaks),
+        "optuna_weighted_objective": study.best_value,
+        "normalized_rmse": result.normalized_rmse,
+        "rmse": result.rmse,
+        "r2": result.r2,
+        "background": {
+            "offset": offset,
+            "amplitude": amplitude,
+            "center": center,
+            "width": width,
+        },
+        "peaks": [
+            {
+                "label": peak.label,
+                "amplitude": peak.amplitude,
+                "center": peak.center,
+                "sigma": peak.sigma,
+                "fwhm": 2.354820045 * peak.sigma,
+                "area": peak.area,
+                "area_ratio": peak.area_ratio,
+            }
+            for peak in result.peaks
+        ],
+    }
+    output.parent.mkdir(parents=True, exist_ok=True)
+    output.write_text(json.dumps(summary, indent=2), encoding="utf-8")
+
+
+def load_xy_csv(
+    input_path: Path,
+    x_column: str,
+    y_column: str,
+) -> tuple[np.ndarray, np.ndarray]:
+    if not input_path.exists():
+        raise FileNotFoundError(f"Input CSV not found: {input_path}")
+
+    with input_path.open("r", encoding="utf-8-sig", newline="") as handle:
+        reader = csv.DictReader(handle)
+        if reader.fieldnames is None:
+            raise ValueError(f"CSV has no header row: {input_path}")
+        fieldnames = [name.strip() for name in reader.fieldnames]
+        name_lookup = {name.strip().lower(): name for name in reader.fieldnames}
+        actual_x = name_lookup.get(x_column.lower())
+        actual_y = name_lookup.get(y_column.lower())
+        if actual_x is None or actual_y is None:
+            raise ValueError(
+                f"Requested columns '{x_column}' and '{y_column}' were not found. "
+                f"Available columns: {', '.join(fieldnames)}"
+            )
+
+        x_values: list[float] = []
+        y_values: list[float] = []
+        for row_number, row in enumerate(reader, start=2):
+            try:
+                x_value = float(row[actual_x])
+                y_value = float(row[actual_y])
+            except (TypeError, ValueError) as exc:
+                raise ValueError(
+                    f"Non-numeric data in {input_path} at row {row_number}."
+                ) from exc
+            if np.isfinite(x_value) and np.isfinite(y_value):
+                x_values.append(x_value)
+                y_values.append(y_value)
+
+    if len(x_values) < 3:
+        raise ValueError("At least three finite x/y data points are required.")
+    return np.asarray(x_values, dtype=float), np.asarray(y_values, dtype=float)
+
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Fit Co 2p XPS data with two Gaussian peaks and an adaptive background.")
-    parser.add_argument("--output", default="co_2p_fit.png", help="Path for the fitted figure.")
-    parser.add_argument("--components", default="co_2p_components.csv", help="CSV path for fitted components.")
-    parser.add_argument("--show", action="store_true", help="Show the plot window after saving.")
+    parser = argparse.ArgumentParser(
+        description="Fit an arbitrary number of Gaussian peaks to XPS data using Optuna."
+    )
+    parser.add_argument(
+        "--input",
+        default=str(Path(__file__).with_name("co_2p_components.csv")),
+        help="Input CSV path.",
+    )
+    parser.add_argument("--x-column", default="binding_energy_eV")
+    parser.add_argument("--y-column", default="intensity")
+    parser.add_argument(
+        "--fit-range",
+        default=None,
+        help="Energy range used for fitting, written as min:max, for example 775:785.",
+    )
+    parser.add_argument("--n-peaks", type=int, default=FIT_CONFIG["n_peaks"])
+    parser.add_argument(
+        "--peak-labels",
+        default=None,
+        help="Comma-separated labels, for example Co2+,Co3+.",
+    )
+    parser.add_argument(
+        "--center-ranges",
+        default=None,
+        help="Comma-separated min:max ranges, for example 779:780.5,781:782.5.",
+    )
+    parser.add_argument(
+        "--minimum-peak-separation",
+        type=float,
+        default=FIT_CONFIG["minimum_peak_separation"],
+    )
+    parser.add_argument(
+        "--high-intensity-weight",
+        type=float,
+        default=FIT_CONFIG["high_intensity_weight"],
+        help="Extra weight applied to high-intensity data points in the Optuna objective.",
+    )
+    parser.add_argument("--title", default=FIT_CONFIG["spectrum_title"])
+    parser.add_argument("--ascending-x", action="store_true", help="Do not reverse the XPS x-axis.")
+    parser.add_argument("--n-trials", type=int, default=FIT_CONFIG["n_trials"])
+    parser.add_argument("--seed", type=int, default=FIT_CONFIG["seed"])
+    parser.add_argument("--timeout", type=float, default=FIT_CONFIG["timeout"])
+    parser.add_argument("--output", default="xps_peak_fit.png")
+    parser.add_argument("--components", default="xps_peak_components.csv")
+    parser.add_argument("--trials-output", default="xps_optuna_trials.csv")
+    parser.add_argument("--history-output", default="xps_optuna_history.png")
+    parser.add_argument("--summary-output", default="xps_fit_summary.json")
+    parser.add_argument("--show", action="store_true")
     return parser.parse_args()
 
 
@@ -301,24 +591,71 @@ def main() -> None:
     args = parse_args()
     configure_plot()
 
-    x = data[:, 0]
-    y = data[:, 1]
-    result = fit_co_2p(x, y)
+    input_path = Path(args.input)
+    raw_x, raw_y = load_xy_csv(input_path, args.x_column, args.y_column)
+    data_min, data_max = sorted((float(np.min(raw_x)), float(np.max(raw_x))))
+    fit_range = parse_fit_range(args.fit_range, data_min, data_max)
+    x, y = select_fit_region(raw_x, raw_y, fit_range)
+    x_min, x_max = sorted((float(np.min(x)), float(np.max(x))))
+    labels = parse_peak_labels(args.peak_labels, args.n_peaks)
+    center_ranges = parse_center_ranges(
+        args.center_ranges,
+        args.n_peaks,
+        x_min,
+        x_max,
+    )
+    print(f"Input: {input_path}")
+    print(f"Fit range: {fit_range[0]:.4f} to {fit_range[1]:.4f} ({len(x)} points)")
+    print(f"Fitting {args.n_peaks} peaks: {', '.join(labels)}")
+    print(f"Center ranges: {center_ranges}")
+
+    result, study = fit_xps_peaks(
+        x=x,
+        y=y,
+        n_peaks=args.n_peaks,
+        labels=labels,
+        center_ranges=center_ranges,
+        n_trials=args.n_trials,
+        seed=args.seed,
+        timeout=args.timeout,
+        minimum_peak_separation=args.minimum_peak_separation,
+        high_intensity_weight=args.high_intensity_weight,
+    )
 
     output = Path(args.output) if args.output else None
     components = Path(args.components) if args.components else None
-    plot_fit(result, output=output, show=args.show)
+    trials_output = Path(args.trials_output) if args.trials_output else None
+    history_output = Path(args.history_output) if args.history_output else None
+    summary_output = Path(args.summary_output) if args.summary_output else None
+    plot_fit(
+        result,
+        raw_x,
+        raw_y,
+        fit_range,
+        args.title,
+        not args.ascending_x,
+        output,
+        args.show,
+    )
     if components is not None:
         write_components(result, components)
+    if trials_output is not None:
+        trials_output.parent.mkdir(parents=True, exist_ok=True)
+        study.trials_dataframe().to_csv(trials_output, index=False)
+    if history_output is not None:
+        plot_optimization_history(study, history_output)
+    if summary_output is not None:
+        write_summary(result, study, summary_output)
 
-    _, _, _, _, c1, w1, _, c2, w2 = result.params
-    print(f"Co2+ center = {c1:.4f} eV, width = {w1:.4f} eV, ratio = {result.co2_ratio:.4f}")
-    print(f"Co3+ center = {c2:.4f} eV, width = {w2:.4f} eV, ratio = {result.co3_ratio:.4f}")
-    print(f"R2 = {result.r2:.5f}")
-    if output is not None:
-        print(f"Saved figure: {output}")
-    if components is not None:
-        print(f"Saved components: {components}")
+    print(f"Best Optuna trial: {study.best_trial.number}")
+    for peak in result.peaks:
+        print(
+            f"{peak.label}: center={peak.center:.4f}, sigma={peak.sigma:.4f}, "
+            f"FWHM={2.354820045 * peak.sigma:.4f}, area ratio={peak.area_ratio:.4f}"
+        )
+    print(f"Normalized RMSE: {result.normalized_rmse:.6f}")
+    print(f"RMSE: {result.rmse:.6f}")
+    print(f"R2: {result.r2:.6f}")
 
 
 if __name__ == "__main__":
